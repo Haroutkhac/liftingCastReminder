@@ -1,29 +1,30 @@
 /**
- * LiftingCast WebSocket Client
+ * LiftingCast CouchDB Client
  *
- * Connects to either:
- *   - The mock server (default: ws://localhost:8080)
- *   - The real LiftingCast API (wss://backup.liftingcast.com/websocket)
+ * Connects to LiftingCast's public readonly CouchDB endpoint.
+ * No API key or password needed — uses the same data source as
+ * the public spectator board view.
  *
  * Monitors a specific lifter and detects when they are "on deck"
  * (within 2 positions of lifting).
  *
+ * CouchDB attempt ID format: a{attemptNumber}{liftInitial}-{lifterId}
+ *   liftInitial: s=squat, b=bench, d=deadlift
+ *   Example: a1d-l0jd58nr3af4 = deadlift attempt 1 for lifter l0jd58nr3af4
+ *
  * Configuration (env vars or CLI args):
- *   MEET_ID / --meet-id       Meet ID
- *   MEET_PASSWORD / --password Meet password
- *   API_KEY / --api-key        API key
- *   TRACK_LIFTER / --track     Lifter name to track (partial match, case-insensitive)
- *   LIFTINGCAST_URL / --url    Custom WebSocket URL
- *   PORT                       HTTP health check port (default: 3000)
+ *   MEET_ID / --meet-id       Meet ID (e.g. mfmnsrd1fve8)
+ *   TRACK_LIFTER / --track    Lifter name to track (partial match, case-insensitive)
+ *   COUCHDB_URL / --url       Custom CouchDB base URL
+ *   PORT                      HTTP health check port (default: 3000)
  *
  * CLI-only options:
- *   --real                Use real LiftingCast API
- *   --list-lifters        Just list all lifters and exit
+ *   --list-lifters            Just list all lifters and exit
  */
 const http = require('http');
-const WebSocket = require('ws');
+const https = require('https');
 
-// --- Parse CLI arguments (local dev fallback) ---
+// --- Parse CLI arguments ---
 const args = {};
 for (const arg of process.argv.slice(2)) {
   if (arg.startsWith('--')) {
@@ -32,119 +33,198 @@ for (const arg of process.argv.slice(2)) {
   }
 }
 
-const MOCK_URL = 'ws://localhost:8080';
-const REAL_URL = 'wss://backup.liftingcast.com/websocket';
+const COUCHDB_BASE = 'https://couchdb.liftingcast.com';
 
-// Environment variables take priority, CLI args as fallback
-const meetId = process.env.MEET_ID || args['meet-id'] || 'mtest12345678';
-const password = process.env.MEET_PASSWORD || args['password'] || 'testpass';
-const apiKey = process.env.API_KEY || args['api-key'] || '';
+const meetId = process.env.MEET_ID || args['meet-id'] || '';
 const trackName = process.env.TRACK_LIFTER || args['track'] || '';
 const listLifters = args['list-lifters'] || false;
+const couchdbBase = process.env.COUCHDB_URL || args['url'] || COUCHDB_BASE;
+const dbUrl = `${couchdbBase}/${meetId}_readonly`;
 
-let baseUrl;
-if (process.env.LIFTINGCAST_URL) {
-  baseUrl = process.env.LIFTINGCAST_URL;
-} else if (args['url']) {
-  baseUrl = args['url'];
-} else if (args['real'] || process.env.MEET_ID) {
-  // Auto-use real URL when MEET_ID env var is set (i.e. on Railway)
-  baseUrl = REAL_URL;
-} else {
-  baseUrl = MOCK_URL;
+if (!meetId) {
+  console.error('Error: MEET_ID is required. Set via env var or --meet-id=...');
+  process.exit(1);
+}
+
+// --- Attempt ID parsing ---
+// Format: a{attemptNum}{liftInitial}-{lifterId}
+const LIFT_MAP = { s: 'squat', b: 'bench', d: 'dead' };
+const LIFT_ORDER = { squat: 0, bench: 1, dead: 2 };
+
+function parseAttemptId(attemptId) {
+  if (!attemptId || !attemptId.startsWith('a')) return null;
+  // e.g. "a1d-l0jd58nr3af4" -> attemptNumber=1, lift=d(ead), lifterId=l0jd58nr3af4
+  const match = attemptId.match(/^a(\d)([sbd])-(.+)$/);
+  if (!match) return null;
+  return {
+    attemptNumber: match[1],
+    liftName: LIFT_MAP[match[2]],
+    liftInitial: match[2],
+    lifterId: match[3],
+  };
 }
 
 // --- HTTP health check server (Railway requires a listening port) ---
 const PORT = process.env.PORT || 3000;
-const server = http.createServer((req, res) => {
+
+// In-memory meet state built from CouchDB docs
+const state = {
+  meet: null,
+  platforms: {},   // platformId -> platform doc
+  lifters: {},     // lifterId -> lifter doc
+  divisions: {},   // divisionId -> division doc
+  attempts: {},    // attemptId -> attempt doc
+  lastSeq: '0',
+};
+
+// Tracking state per platform
+const trackState = {};
+
+// --- Compute attempt order for a platform ---
+// Sort: session -> lift type -> flight -> attempt number -> weight -> lot
+function computeAttemptOrder(platformId) {
+  const platformLifters = Object.values(state.lifters).filter(l => l.platformId === platformId);
+  const pending = [];
+
+  for (const lifter of platformLifters) {
+    if (!lifter.lifts) continue;
+    for (const [liftName, attempts] of Object.entries(lifter.lifts)) {
+      for (const [attemptNum, attempt] of Object.entries(attempts)) {
+        if (attemptNum === '4') continue; // Skip 4th attempts for ordering
+        if (attempt.result !== null && attempt.result !== undefined && attempt.result !== '') continue; // Already done
+        pending.push({
+          lifterId: lifter._id,
+          lifterName: lifter.name,
+          liftName,
+          attemptNumber: attemptNum,
+          weight: attempt.weight || 9999,
+          lot: lifter.lot || 999,
+          session: lifter.session || 1,
+          flight: lifter.flight || 'Z',
+          attemptId: attempt.id || `a${attemptNum}${liftName[0]}-${lifter._id}`,
+        });
+      }
+    }
+  }
+
+  pending.sort((a, b) => {
+    if (a.session !== b.session) return a.session - b.session;
+    if (LIFT_ORDER[a.liftName] !== LIFT_ORDER[b.liftName]) return LIFT_ORDER[a.liftName] - LIFT_ORDER[b.liftName];
+    if (a.flight !== b.flight) return a.flight.localeCompare(b.flight);
+    if (a.attemptNumber !== b.attemptNumber) return a.attemptNumber - b.attemptNumber;
+    if (a.weight !== b.weight) return a.weight - b.weight;
+    return a.lot - b.lot;
+  });
+
+  return pending;
+}
+
+const healthServer = http.createServer((req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', tracking: trackName || null, meetId }));
+    res.end(JSON.stringify({
+      status: 'ok',
+      tracking: trackName || null,
+      meetId,
+      lifterCount: Object.keys(state.lifters).length,
+      platformCount: Object.keys(state.platforms).length,
+    }));
+  } else if (req.url === '/state') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    const summary = {};
+    for (const [pid, platform] of Object.entries(state.platforms)) {
+      const parsed = parseAttemptId(platform.currentAttemptId);
+      const currentLifter = parsed ? state.lifters[parsed.lifterId] : null;
+      const order = computeAttemptOrder(pid);
+      // Find current position in order
+      let currentIdx = -1;
+      if (platform.currentAttemptId) {
+        currentIdx = order.findIndex(a => a.attemptId === platform.currentAttemptId);
+      }
+      const nextUp = currentIdx >= 0 ? order.slice(currentIdx + 1, currentIdx + 6).map(a => ({
+        name: a.lifterName, lift: a.liftName, attempt: a.attemptNumber,
+      })) : [];
+
+      summary[pid] = {
+        platformName: platform.name,
+        currentLifter: currentLifter?.name || null,
+        liftName: parsed?.liftName || null,
+        attemptNumber: parsed?.attemptNumber || null,
+        nextUp,
+      };
+    }
+    res.end(JSON.stringify({ meetName: state.meet?.name || meetId, platforms: summary }, null, 2));
   } else {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('LiftAlert is running');
   }
 });
-server.listen(PORT, () => {
+healthServer.listen(PORT, () => {
   console.log(`[HEALTH] HTTP server listening on port ${PORT}`);
 });
 
-const auth = Buffer.from(`${meetId}:${password}`).toString('base64');
-const wsUrl = `${baseUrl}?meetId=${encodeURIComponent(meetId)}&auth=${encodeURIComponent(auth)}&apiKey=${encodeURIComponent(apiKey)}`;
+// --- Simple HTTPS fetch helper ---
+function fetchJSON(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    const timeout = options.timeout || 90000;
+    const req = https.get(url, { timeout }, (res) => {
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        res.resume();
+        reject(new Error(`HTTP ${res.statusCode} from ${url}`));
+        return;
+      }
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        try { resolve(JSON.parse(body)); }
+        catch (e) { reject(new Error(`Invalid JSON from ${url}`)); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error(`Timeout fetching ${url}`)); });
+  });
+}
 
-// --- State ---
-let lastCurrentLifterId = null;
-let notifiedOnDeck = false;
-let notifiedInTheHole = false;
-let reconnectTimeout = 2000;
-let pingInterval = null;
+// --- Process a CouchDB document into our state ---
+function processDoc(doc) {
+  if (!doc || !doc._id) return;
+  const id = doc._id;
 
-function connect() {
-  console.log(`\n=== LiftingCast Client ===`);
-  console.log(`Connecting to: ${baseUrl}`);
+  if (id === meetId) {
+    state.meet = doc;
+  } else if (id.startsWith('p') && !id.startsWith('pi')) {
+    // Platform document (exclude "pi" prefix if any)
+    state.platforms[id] = doc;
+  } else if (id.startsWith('l')) {
+    state.lifters[id] = doc;
+  } else if (id.startsWith('d')) {
+    state.divisions[id] = doc;
+  } else if (id.startsWith('a')) {
+    state.attempts[id] = doc;
+  }
+}
+
+// --- Initial load: fetch all docs ---
+async function initialLoad() {
+  console.log(`\n=== LiftAlert CouchDB Client ===`);
+  console.log(`CouchDB: ${dbUrl}`);
   console.log(`Meet ID: ${meetId}`);
   if (trackName) console.log(`Tracking: "${trackName}"`);
   console.log('');
 
-  const ws = new WebSocket(wsUrl, {
-    headers: {
-      'Origin': 'https://liftingcast.com',
-      'User-Agent': 'LiftAlert/1.0',
-    },
-    handshakeTimeout: 10000,
-  });
+  console.log('[LOADING] Fetching all documents...');
+  const result = await fetchJSON(`${dbUrl}/_all_docs?include_docs=true`);
 
-  ws.on('open', () => {
-    console.log('[CONNECTED]\n');
-    reconnectTimeout = 2000;
-
-    // Send heartbeat pings every 30s
-    pingInterval = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send('ping');
-      }
-    }, 30000);
-  });
-
-  ws.on('message', (data) => {
-    const text = data.toString();
-
-    // Ignore pong responses
-    if (text === 'pong') return;
-
-    try {
-      const meet = JSON.parse(text);
-      handleMeetUpdate(meet);
-    } catch (e) {
-      console.log(`[MSG] Non-JSON: ${text.substring(0, 200)}`);
-    }
-  });
-
-  ws.on('error', (err) => {
-    console.error(`[ERROR] ${err.message}`);
-  });
-
-  ws.on('close', (code, reason) => {
-    console.log(`[DISCONNECTED] code=${code}`);
-    if (pingInterval) clearInterval(pingInterval);
-
-    // Reconnect with exponential backoff
-    console.log(`[RECONNECT] Retrying in ${reconnectTimeout / 1000}s...`);
-    setTimeout(connect, reconnectTimeout);
-    reconnectTimeout = Math.min(reconnectTimeout * 2, 30000);
-  });
-}
-
-function handleMeetUpdate(meet) {
-  if (!meet.lifters || !meet.platforms) {
-    console.log('[UPDATE] Received state but no lifters/platforms yet');
-    return;
+  for (const row of result.rows) {
+    if (row.doc) processDoc(row.doc);
   }
+
+  console.log(`[LOADED] Meet: "${state.meet?.name || '(unknown)'}" | ${Object.keys(state.lifters).length} lifters | ${Object.keys(state.platforms).length} platforms`);
 
   // List lifters mode
   if (listLifters) {
-    console.log(`\n=== Lifters in "${meet.name}" ===\n`);
-    const sorted = Object.values(meet.lifters).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    console.log(`\n=== Lifters in "${state.meet?.name || meetId}" ===\n`);
+    const sorted = Object.values(state.lifters).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     for (const l of sorted) {
       console.log(`  ${l.name || '(unnamed)'} | ${l.team || ''} | ${l.gender || ''} | ${l.bodyWeight || ''}kg | Flight ${l.flight || '?'} | Session ${l.session || '?'}`);
     }
@@ -152,28 +232,47 @@ function handleMeetUpdate(meet) {
     process.exit(0);
   }
 
-  // Process each platform
-  for (const [platformId, platform] of Object.entries(meet.platforms)) {
-    const currentAttempt = platform.currentAttempt;
-    if (!currentAttempt) continue;
+  // Show initial platform state
+  checkPlatforms();
 
-    const currentLifter = meet.lifters[currentAttempt.lifter.id];
+  // Get the current update_seq for changes feed
+  const dbInfo = await fetchJSON(dbUrl);
+  state.lastSeq = dbInfo.update_seq || '0';
+  console.log(`[SYNC] Starting changes feed from seq: ${String(state.lastSeq).substring(0, 20)}...`);
+}
+
+// --- Check platforms for tracked lifter ---
+function checkPlatforms() {
+  for (const [platformId, platform] of Object.entries(state.platforms)) {
+    const parsed = parseAttemptId(platform.currentAttemptId);
+    if (!parsed) continue;
+
+    const currentLifter = state.lifters[parsed.lifterId];
     const currentName = currentLifter?.name || 'Unknown';
 
+    // Compute attempt order to find next lifters
+    const order = computeAttemptOrder(platformId);
+    const currentIdx = order.findIndex(a => a.attemptId === platform.currentAttemptId);
+    const nextAttempts = currentIdx >= 0 ? order.slice(currentIdx + 1) : [];
+
+    // Initialize tracking state for this platform
+    if (!trackState[platformId]) {
+      trackState[platformId] = { lastCurrentAttemptId: null, notifiedOnDeck: false, notifiedInTheHole: false };
+    }
+    const ts = trackState[platformId];
+
     // Log lifter change
-    if (currentAttempt.lifter.id !== lastCurrentLifterId) {
-      lastCurrentLifterId = currentAttempt.lifter.id;
-      notifiedOnDeck = false;
-      notifiedInTheHole = false;
+    if (platform.currentAttemptId !== ts.lastCurrentAttemptId) {
+      ts.lastCurrentAttemptId = platform.currentAttemptId;
+      ts.notifiedOnDeck = false;
+      ts.notifiedInTheHole = false;
 
-      console.log(`[CURRENT] ${currentName} - ${currentAttempt.liftName} attempt ${currentAttempt.attemptNumber}`);
+      console.log(`\n[CURRENT] ${currentName} - ${parsed.liftName} attempt ${parsed.attemptNumber} (${platform.name || platformId})`);
 
-      // Show next lifters
-      if (platform.nextAttempts && platform.nextAttempts.length > 0) {
-        const upcoming = platform.nextAttempts.slice(0, 5).map((a, i) => {
-          const lifter = meet.lifters[a.lifter.id];
+      if (nextAttempts.length > 0) {
+        const upcoming = nextAttempts.slice(0, 5).map((a, i) => {
           const label = i === 0 ? 'ON DECK' : i === 1 ? 'IN HOLE' : `#${i + 2}`;
-          return `  ${label}: ${lifter?.name || 'Unknown'} (${a.liftName} ${a.attemptNumber})`;
+          return `  ${label}: ${a.lifterName} (${a.liftName} ${a.attemptNumber})`;
         });
         console.log(upcoming.join('\n'));
       }
@@ -182,33 +281,67 @@ function handleMeetUpdate(meet) {
     // Track specific lifter
     if (trackName) {
       const trackLower = trackName.toLowerCase();
-      const nextAttempts = platform.nextAttempts || [];
 
-      // Check if tracked lifter is currently lifting
       if (currentLifter?.name?.toLowerCase().includes(trackLower)) {
         console.log(`\n*** ALERT: ${currentLifter.name} IS LIFTING NOW! ***\n`);
       }
 
-      // Check if tracked lifter is on deck (position 0)
-      if (nextAttempts.length > 0) {
-        const onDeckLifter = meet.lifters[nextAttempts[0].lifter.id];
-        if (onDeckLifter?.name?.toLowerCase().includes(trackLower) && !notifiedOnDeck) {
-          notifiedOnDeck = true;
-          console.log(`\n*** ALERT: ${onDeckLifter.name} IS ON DECK (next to lift)! ***`);
-          console.log(`*** >> This is when we would send the notification email ***\n`);
-        }
+      if (nextAttempts.length > 0 && nextAttempts[0].lifterName?.toLowerCase().includes(trackLower) && !ts.notifiedOnDeck) {
+        ts.notifiedOnDeck = true;
+        console.log(`\n*** ALERT: ${nextAttempts[0].lifterName} IS ON DECK (next to lift)! ***`);
+        console.log(`*** >> This is when we would send the notification email ***\n`);
       }
 
-      // Check if tracked lifter is in the hole (position 1)
-      if (nextAttempts.length > 1) {
-        const inHoleLifter = meet.lifters[nextAttempts[1].lifter.id];
-        if (inHoleLifter?.name?.toLowerCase().includes(trackLower) && !notifiedInTheHole) {
-          notifiedInTheHole = true;
-          console.log(`\n*** HEADS UP: ${inHoleLifter.name} is in the hole (2 lifters away) ***\n`);
-        }
+      if (nextAttempts.length > 1 && nextAttempts[1].lifterName?.toLowerCase().includes(trackLower) && !ts.notifiedInTheHole) {
+        ts.notifiedInTheHole = true;
+        console.log(`\n*** HEADS UP: ${nextAttempts[1].lifterName} is in the hole (2 lifters away) ***\n`);
       }
     }
   }
 }
 
-connect();
+// --- Long-poll the _changes feed ---
+async function watchChanges() {
+  let retryDelay = 2000;
+
+  while (true) {
+    try {
+      const url = `${dbUrl}/_changes?include_docs=true&since=${encodeURIComponent(state.lastSeq)}&feed=longpoll&timeout=60000`;
+      const changes = await fetchJSON(url, { timeout: 90000 });
+
+      if (changes.results && changes.results.length > 0) {
+        let needsCheck = false;
+        for (const change of changes.results) {
+          if (change.doc) {
+            processDoc(change.doc);
+            // Re-check if platform or lifter changed (lifter changes affect attempt order)
+            if (change.id.startsWith('p') || change.id.startsWith('l')) needsCheck = true;
+          }
+        }
+        if (needsCheck) checkPlatforms();
+      }
+
+      if (changes.last_seq) state.lastSeq = changes.last_seq;
+      retryDelay = 2000;
+    } catch (err) {
+      console.error(`[CHANGES ERROR] ${err.message}`);
+      console.log(`[RECONNECT] Retrying in ${retryDelay / 1000}s...`);
+      await new Promise(r => setTimeout(r, retryDelay));
+      retryDelay = Math.min(retryDelay * 2, 30000);
+    }
+  }
+}
+
+// --- Main ---
+async function main() {
+  try {
+    await initialLoad();
+    await watchChanges();
+  } catch (err) {
+    console.error(`[FATAL] ${err.message}`);
+    console.log('[RESTART] Retrying in 10s...');
+    setTimeout(main, 10000);
+  }
+}
+
+main();
