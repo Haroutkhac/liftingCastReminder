@@ -10,6 +10,10 @@
   "engines": {
     "node": ">=18"
   },
+  "dependencies": {
+    "pg": "^8.13.1",
+    "resend": "^4.1.2"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC"

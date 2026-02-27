@@ -5,24 +5,29 @@
  * No API key or password needed — uses the same data source as
  * the public spectator board view.
  *
- * Monitors a specific lifter and detects when they are "on deck"
- * (within 2 positions of lifting).
+ * Multi-meet support: monitors all meets that have active subscriptions
+ * in Postgres, plus any meet specified via MEET_ID env var.
  *
  * CouchDB attempt ID format: a{attemptNumber}{liftInitial}-{lifterId}
  *   liftInitial: s=squat, b=bench, d=deadlift
  *   Example: a1d-l0jd58nr3af4 = deadlift attempt 1 for lifter l0jd58nr3af4
  *
  * Configuration (env vars or CLI args):
- *   MEET_ID / --meet-id       Meet ID (e.g. mfmnsrd1fve8)
- *   TRACK_LIFTER / --track    Lifter name to track (partial match, case-insensitive)
+ *   MEET_ID / --meet-id       Meet ID (e.g. mfmnsrd1fve8) — optional with DB subscriptions
+ *   TRACK_LIFTER / --track    Lifter name to track via console (partial match, case-insensitive)
  *   COUCHDB_URL / --url       Custom CouchDB base URL
- *   PORT                      HTTP health check port (default: 3000)
+ *   PORT                      HTTP server port (default: 3000)
+ *   DATABASE_URL              Postgres connection string (Railway auto-provides)
+ *   RESEND_API_KEY            Resend email API key
+ *   RESEND_FROM               Sender email (default: onboarding@resend.dev)
  *
  * CLI-only options:
  *   --list-lifters            Just list all lifters and exit
  */
 const http = require('http');
 const https = require('https');
+const { initDB, getSubscriptions, getAllMeetIds, addSubscription, removeSubscription, getSubscriptionsByEmail } = require('./db');
+const { sendOnDeckEmail, sendSubscriptionConfirmation } = require('./email');
 
 // --- Parse CLI arguments ---
 const args = {};
@@ -35,25 +40,17 @@ for (const arg of process.argv.slice(2)) {
 
 const COUCHDB_BASE = 'https://couchdb.liftingcast.com';
 
-const meetId = process.env.MEET_ID || args['meet-id'] || '';
+const cliMeetId = process.env.MEET_ID || args['meet-id'] || '';
 const trackName = process.env.TRACK_LIFTER || args['track'] || '';
 const listLifters = args['list-lifters'] || false;
 const couchdbBase = process.env.COUCHDB_URL || args['url'] || COUCHDB_BASE;
-const dbUrl = `${couchdbBase}/${meetId}_readonly`;
-
-if (!meetId) {
-  console.error('Error: MEET_ID is required. Set via env var or --meet-id=...');
-  process.exit(1);
-}
 
 // --- Attempt ID parsing ---
-// Format: a{attemptNum}{liftInitial}-{lifterId}
 const LIFT_MAP = { s: 'squat', b: 'bench', d: 'dead' };
 const LIFT_ORDER = { squat: 0, bench: 1, dead: 2 };
 
 function parseAttemptId(attemptId) {
   if (!attemptId || !attemptId.startsWith('a')) return null;
-  // e.g. "a1d-l0jd58nr3af4" -> attemptNumber=1, lift=d(ead), lifterId=l0jd58nr3af4
   const match = attemptId.match(/^a(\d)([sbd])-(.+)$/);
   if (!match) return null;
   return {
@@ -64,34 +61,36 @@ function parseAttemptId(attemptId) {
   };
 }
 
-// --- HTTP health check server (Railway requires a listening port) ---
-const PORT = process.env.PORT || 3000;
+// --- Per-meet state ---
+// meets: { [meetId]: { meet, platforms, lifters, divisions, attempts, lastSeq, trackState } }
+const meets = {};
 
-// In-memory meet state built from CouchDB docs
-const state = {
-  meet: null,
-  platforms: {},   // platformId -> platform doc
-  lifters: {},     // lifterId -> lifter doc
-  divisions: {},   // divisionId -> division doc
-  attempts: {},    // attemptId -> attempt doc
-  lastSeq: '0',
-};
-
-// Tracking state per platform
-const trackState = {};
+function getMeetState(meetId) {
+  if (!meets[meetId]) {
+    meets[meetId] = {
+      meet: null,
+      platforms: {},
+      lifters: {},
+      divisions: {},
+      attempts: {},
+      lastSeq: '0',
+      trackState: {},
+    };
+  }
+  return meets[meetId];
+}
 
 // --- Compute attempt order for a platform ---
-// Sort: session -> lift type -> flight -> attempt number -> weight -> lot
-function computeAttemptOrder(platformId) {
-  const platformLifters = Object.values(state.lifters).filter(l => l.platformId === platformId);
+function computeAttemptOrder(meetState, platformId) {
+  const platformLifters = Object.values(meetState.lifters).filter(l => l.platformId === platformId);
   const pending = [];
 
   for (const lifter of platformLifters) {
     if (!lifter.lifts) continue;
     for (const [liftName, attempts] of Object.entries(lifter.lifts)) {
       for (const [attemptNum, attempt] of Object.entries(attempts)) {
-        if (attemptNum === '4') continue; // Skip 4th attempts for ordering
-        if (attempt.result !== null && attempt.result !== undefined && attempt.result !== '') continue; // Already done
+        if (attemptNum === '4') continue;
+        if (attempt.result !== null && attempt.result !== undefined && attempt.result !== '') continue;
         pending.push({
           lifterId: lifter._id,
           lifterName: lifter.name,
@@ -119,155 +118,70 @@ function computeAttemptOrder(platformId) {
   return pending;
 }
 
-const healthServer = http.createServer((req, res) => {
-  if (req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      status: 'ok',
-      tracking: trackName || null,
-      meetId,
-      lifterCount: Object.keys(state.lifters).length,
-      platformCount: Object.keys(state.platforms).length,
-    }));
-  } else if (req.url === '/state') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    const summary = {};
-    for (const [pid, platform] of Object.entries(state.platforms)) {
-      const parsed = parseAttemptId(platform.currentAttemptId);
-      const currentLifter = parsed ? state.lifters[parsed.lifterId] : null;
-      const order = computeAttemptOrder(pid);
-      // Find current position in order
-      let currentIdx = -1;
-      if (platform.currentAttemptId) {
-        currentIdx = order.findIndex(a => a.attemptId === platform.currentAttemptId);
-      }
-      const nextUp = currentIdx >= 0 ? order.slice(currentIdx + 1, currentIdx + 6).map(a => ({
-        name: a.lifterName, lift: a.liftName, attempt: a.attemptNumber,
-      })) : [];
-
-      summary[pid] = {
-        platformName: platform.name,
-        currentLifter: currentLifter?.name || null,
-        liftName: parsed?.liftName || null,
-        attemptNumber: parsed?.attemptNumber || null,
-        nextUp,
-      };
-    }
-    res.end(JSON.stringify({ meetName: state.meet?.name || meetId, platforms: summary }, null, 2));
-  } else {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('LiftAlert is running');
-  }
-});
-healthServer.listen(PORT, () => {
-  console.log(`[HEALTH] HTTP server listening on port ${PORT}`);
-});
-
-// --- Simple HTTPS fetch helper ---
-function fetchJSON(url, options = {}) {
-  return new Promise((resolve, reject) => {
-    const timeout = options.timeout || 90000;
-    const req = https.get(url, { timeout }, (res) => {
-      if (res.statusCode < 200 || res.statusCode >= 300) {
-        res.resume();
-        reject(new Error(`HTTP ${res.statusCode} from ${url}`));
-        return;
-      }
-      let body = '';
-      res.on('data', chunk => body += chunk);
-      res.on('end', () => {
-        try { resolve(JSON.parse(body)); }
-        catch (e) { reject(new Error(`Invalid JSON from ${url}`)); }
-      });
-    });
-    req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error(`Timeout fetching ${url}`)); });
-  });
-}
-
-// --- Process a CouchDB document into our state ---
-function processDoc(doc) {
+// --- Process a CouchDB document into meet state ---
+function processDoc(meetId, doc) {
   if (!doc || !doc._id) return;
   const id = doc._id;
+  const st = getMeetState(meetId);
 
   if (id === meetId) {
-    state.meet = doc;
+    st.meet = doc;
   } else if (id.startsWith('p') && !id.startsWith('pi')) {
-    // Platform document (exclude "pi" prefix if any)
-    state.platforms[id] = doc;
+    st.platforms[id] = doc;
   } else if (id.startsWith('l')) {
-    state.lifters[id] = doc;
+    st.lifters[id] = doc;
   } else if (id.startsWith('d')) {
-    state.divisions[id] = doc;
+    st.divisions[id] = doc;
   } else if (id.startsWith('a')) {
-    state.attempts[id] = doc;
+    st.attempts[id] = doc;
   }
 }
 
-// --- Initial load: fetch all docs ---
-async function initialLoad() {
-  console.log(`\n=== LiftAlert CouchDB Client ===`);
-  console.log(`CouchDB: ${dbUrl}`);
-  console.log(`Meet ID: ${meetId}`);
-  if (trackName) console.log(`Tracking: "${trackName}"`);
-  console.log('');
+// --- Send email notifications for a lifter match ---
+async function notifySubscribers(meetId, lifterName, liftName, position) {
+  try {
+    const subs = await getSubscriptions(meetId);
+    const meetName = getMeetState(meetId).meet?.name || meetId;
+    const nameLower = lifterName.toLowerCase();
 
-  console.log('[LOADING] Fetching all documents...');
-  const result = await fetchJSON(`${dbUrl}/_all_docs?include_docs=true`);
-
-  for (const row of result.rows) {
-    if (row.doc) processDoc(row.doc);
-  }
-
-  console.log(`[LOADED] Meet: "${state.meet?.name || '(unknown)'}" | ${Object.keys(state.lifters).length} lifters | ${Object.keys(state.platforms).length} platforms`);
-
-  // List lifters mode
-  if (listLifters) {
-    console.log(`\n=== Lifters in "${state.meet?.name || meetId}" ===\n`);
-    const sorted = Object.values(state.lifters).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-    for (const l of sorted) {
-      console.log(`  ${l.name || '(unnamed)'} | ${l.team || ''} | ${l.gender || ''} | ${l.bodyWeight || ''}kg | Flight ${l.flight || '?'} | Session ${l.session || '?'}`);
+    for (const sub of subs) {
+      if (nameLower.includes(sub.lifter_name.toLowerCase())) {
+        sendOnDeckEmail(sub.email, lifterName, meetName, liftName, position, meetId, sub.lifter_name);
+      }
     }
-    console.log(`\nTotal: ${sorted.length} lifters`);
-    process.exit(0);
+  } catch (err) {
+    console.error(`[NOTIFY ERROR] ${err.message}`);
   }
-
-  // Show initial platform state
-  checkPlatforms();
-
-  // Get the current update_seq for changes feed
-  const dbInfo = await fetchJSON(dbUrl);
-  state.lastSeq = dbInfo.update_seq || '0';
-  console.log(`[SYNC] Starting changes feed from seq: ${String(state.lastSeq).substring(0, 20)}...`);
 }
 
 // --- Check platforms for tracked lifter ---
-function checkPlatforms() {
-  for (const [platformId, platform] of Object.entries(state.platforms)) {
+function checkPlatforms(meetId) {
+  const st = getMeetState(meetId);
+
+  for (const [platformId, platform] of Object.entries(st.platforms)) {
     const parsed = parseAttemptId(platform.currentAttemptId);
     if (!parsed) continue;
 
-    const currentLifter = state.lifters[parsed.lifterId];
+    const currentLifter = st.lifters[parsed.lifterId];
     const currentName = currentLifter?.name || 'Unknown';
 
-    // Compute attempt order to find next lifters
-    const order = computeAttemptOrder(platformId);
+    const order = computeAttemptOrder(st, platformId);
     const currentIdx = order.findIndex(a => a.attemptId === platform.currentAttemptId);
     const nextAttempts = currentIdx >= 0 ? order.slice(currentIdx + 1) : [];
 
-    // Initialize tracking state for this platform
-    if (!trackState[platformId]) {
-      trackState[platformId] = { lastCurrentAttemptId: null, notifiedOnDeck: false, notifiedInTheHole: false };
+    if (!st.trackState[platformId]) {
+      st.trackState[platformId] = { lastCurrentAttemptId: null, notifiedOnDeck: new Set(), notifiedInTheHole: new Set(), notifiedLifting: new Set() };
     }
-    const ts = trackState[platformId];
+    const ts = st.trackState[platformId];
 
-    // Log lifter change
+    // Reset notifications when current attempt changes
     if (platform.currentAttemptId !== ts.lastCurrentAttemptId) {
       ts.lastCurrentAttemptId = platform.currentAttemptId;
-      ts.notifiedOnDeck = false;
-      ts.notifiedInTheHole = false;
+      ts.notifiedOnDeck = new Set();
+      ts.notifiedInTheHole = new Set();
+      ts.notifiedLifting = new Set();
 
-      console.log(`\n[CURRENT] ${currentName} - ${parsed.liftName} attempt ${parsed.attemptNumber} (${platform.name || platformId})`);
+      console.log(`\n[CURRENT] ${currentName} - ${parsed.liftName} attempt ${parsed.attemptNumber} (${platform.name || platformId}) [${meetId}]`);
 
       if (nextAttempts.length > 0) {
         const upcoming = nextAttempts.slice(0, 5).map((a, i) => {
@@ -278,70 +192,691 @@ function checkPlatforms() {
       }
     }
 
-    // Track specific lifter
+    // Console tracking (CLI --track)
     if (trackName) {
       const trackLower = trackName.toLowerCase();
-
       if (currentLifter?.name?.toLowerCase().includes(trackLower)) {
         console.log(`\n*** ALERT: ${currentLifter.name} IS LIFTING NOW! ***\n`);
       }
-
-      if (nextAttempts.length > 0 && nextAttempts[0].lifterName?.toLowerCase().includes(trackLower) && !ts.notifiedOnDeck) {
-        ts.notifiedOnDeck = true;
-        console.log(`\n*** ALERT: ${nextAttempts[0].lifterName} IS ON DECK (next to lift)! ***`);
-        console.log(`*** >> This is when we would send the notification email ***\n`);
+      if (nextAttempts.length > 0 && nextAttempts[0].lifterName?.toLowerCase().includes(trackLower) && !ts.notifiedOnDeck.has('cli')) {
+        ts.notifiedOnDeck.add('cli');
+        console.log(`\n*** ALERT: ${nextAttempts[0].lifterName} IS ON DECK (next to lift)! ***\n`);
       }
-
-      if (nextAttempts.length > 1 && nextAttempts[1].lifterName?.toLowerCase().includes(trackLower) && !ts.notifiedInTheHole) {
-        ts.notifiedInTheHole = true;
+      if (nextAttempts.length > 1 && nextAttempts[1].lifterName?.toLowerCase().includes(trackLower) && !ts.notifiedInTheHole.has('cli')) {
+        ts.notifiedInTheHole.add('cli');
         console.log(`\n*** HEADS UP: ${nextAttempts[1].lifterName} is in the hole (2 lifters away) ***\n`);
       }
+    }
+
+    // Email notifications for current lifter
+    if (currentLifter?.name && !ts.notifiedLifting.has(currentLifter.name)) {
+      ts.notifiedLifting.add(currentLifter.name);
+      notifySubscribers(meetId, currentLifter.name, parsed.liftName, 'lifting');
+    }
+
+    // Email notifications for on deck
+    if (nextAttempts.length > 0 && nextAttempts[0].lifterName && !ts.notifiedOnDeck.has(nextAttempts[0].lifterName)) {
+      ts.notifiedOnDeck.add(nextAttempts[0].lifterName);
+      notifySubscribers(meetId, nextAttempts[0].lifterName, nextAttempts[0].liftName, 'on-deck');
+    }
+
+    // Email notifications for in the hole
+    if (nextAttempts.length > 1 && nextAttempts[1].lifterName && !ts.notifiedInTheHole.has(nextAttempts[1].lifterName)) {
+      ts.notifiedInTheHole.add(nextAttempts[1].lifterName);
+      notifySubscribers(meetId, nextAttempts[1].lifterName, nextAttempts[1].liftName, 'in-the-hole');
     }
   }
 }
 
-// --- Long-poll the _changes feed ---
-async function watchChanges() {
+// --- Simple HTTPS fetch helper ---
+function fetchJSON(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    const timeout = options.timeout || 90000;
+    let settled = false;
+    const settle = (fn, val) => { if (!settled) { settled = true; fn(val); } };
+
+    const req = https.get(url, { timeout }, (res) => {
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        res.resume();
+        settle(reject, new Error(`HTTP ${res.statusCode} from ${url}`));
+        return;
+      }
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('error', (err) => settle(reject, err));
+      res.on('end', () => {
+        try { settle(resolve, JSON.parse(body)); }
+        catch (e) { settle(reject, new Error(`Invalid JSON from ${url}`)); }
+      });
+    });
+    req.on('error', (err) => settle(reject, err));
+    req.on('timeout', () => { req.destroy(); settle(reject, new Error(`Timeout fetching ${url}`)); });
+  });
+}
+
+// --- Initial load for a single meet ---
+async function loadMeet(meetId) {
+  const dbUrl = `${couchdbBase}/${meetId}_readonly`;
+  console.log(`[LOADING] Fetching docs for meet ${meetId}...`);
+
+  // Capture update_seq BEFORE loading docs so the changes feed will replay
+  // anything that arrives during the _all_docs fetch (processDoc is idempotent).
+  const dbInfo = await fetchJSON(dbUrl);
+  const startSeq = dbInfo.update_seq || '0';
+
+  const result = await fetchJSON(`${dbUrl}/_all_docs?include_docs=true`);
+  for (const row of result.rows) {
+    if (row.doc) processDoc(meetId, row.doc);
+  }
+
+  const st = getMeetState(meetId);
+  console.log(`[LOADED] Meet: "${st.meet?.name || '(unknown)'}" | ${Object.keys(st.lifters).length} lifters | ${Object.keys(st.platforms).length} platforms`);
+
+  // List lifters mode (only for CLI meet)
+  if (listLifters && meetId === cliMeetId) {
+    console.log(`\n=== Lifters in "${st.meet?.name || meetId}" ===\n`);
+    const sorted = Object.values(st.lifters).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    for (const l of sorted) {
+      console.log(`  ${l.name || '(unnamed)'} | ${l.team || ''} | ${l.gender || ''} | ${l.bodyWeight || ''}kg | Flight ${l.flight || '?'} | Session ${l.session || '?'}`);
+    }
+    console.log(`\nTotal: ${sorted.length} lifters`);
+    process.exit(0);
+  }
+
+  if (isMeetReady(meetId)) {
+    checkPlatforms(meetId);
+    st.lastSeq = startSeq;
+    console.log(`[SYNC] Starting changes feed for ${meetId} from seq: ${String(st.lastSeq).substring(0, 20)}...`);
+  }
+}
+
+// --- Graceful shutdown ---
+let shuttingDown = false;
+
+// --- Long-poll the _changes feed for a single meet ---
+async function watchChanges(meetId) {
+  const dbUrl = `${couchdbBase}/${meetId}_readonly`;
   let retryDelay = 2000;
 
-  while (true) {
+  while (!shuttingDown && watchingMeets.has(meetId)) {
     try {
-      const url = `${dbUrl}/_changes?include_docs=true&since=${encodeURIComponent(state.lastSeq)}&feed=longpoll&timeout=60000`;
+      const st = getMeetState(meetId);
+      const url = `${dbUrl}/_changes?include_docs=true&since=${encodeURIComponent(st.lastSeq)}&feed=longpoll&timeout=60000`;
       const changes = await fetchJSON(url, { timeout: 90000 });
 
       if (changes.results && changes.results.length > 0) {
         let needsCheck = false;
         for (const change of changes.results) {
           if (change.doc) {
-            processDoc(change.doc);
-            // Re-check if platform or lifter changed (lifter changes affect attempt order)
+            processDoc(meetId, change.doc);
             if (change.id.startsWith('p') || change.id.startsWith('l')) needsCheck = true;
           }
         }
-        if (needsCheck) checkPlatforms();
+        if (needsCheck) checkPlatforms(meetId);
       }
 
-      if (changes.last_seq) state.lastSeq = changes.last_seq;
+      if (changes.last_seq) st.lastSeq = changes.last_seq;
       retryDelay = 2000;
     } catch (err) {
-      console.error(`[CHANGES ERROR] ${err.message}`);
-      console.log(`[RECONNECT] Retrying in ${retryDelay / 1000}s...`);
+      if (shuttingDown) break;
+      console.error(`[CHANGES ERROR] ${meetId}: ${err.message}`);
+      console.log(`[RECONNECT] ${meetId}: Retrying in ${retryDelay / 1000}s...`);
       await new Promise(r => setTimeout(r, retryDelay));
       retryDelay = Math.min(retryDelay * 2, 30000);
     }
   }
+  console.log(`[WATCH] Stopped changes feed for ${meetId}`);
 }
 
-// --- Main ---
-async function main() {
+// --- Meet date helpers ---
+function parseMeetDate(meetDoc) {
+  if (!meetDoc || !meetDoc.date) return null;
+  const fmt = meetDoc.dateFormat || 'MM/DD/YYYY';
+  const parts = meetDoc.date.split('/');
+  if (parts.length !== 3) return null;
+  let y, m, d;
+  if (fmt === 'MM/DD/YYYY') { [m, d, y] = parts; }
+  else if (fmt === 'DD/MM/YYYY') { [d, m, y] = parts; }
+  else { [m, d, y] = parts; } // default
+  const date = new Date(Number(y), Number(m) - 1, Number(d));
+  return isNaN(date.getTime()) ? null : date;
+}
+
+function isMeetReady(meetId) {
+  const st = meets[meetId];
+  if (!st || !st.meet) return true; // if we can't tell, assume ready
+  const meetDate = parseMeetDate(st.meet);
+  if (!meetDate) return true; // no date info, assume ready
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return meetDate <= today;
+}
+
+// --- Start monitoring a meet (load + watch) ---
+const loadedMeets = new Set();  // meets with data loaded (for autocomplete)
+const watchingMeets = new Set(); // meets with active changes feed
+const pendingMeets = new Set();  // meets currently being loaded (prevents duplicate loads)
+
+async function startMeet(meetId) {
+  if (loadedMeets.has(meetId) || pendingMeets.has(meetId)) return;
+  pendingMeets.add(meetId);
   try {
-    await initialLoad();
-    await watchChanges();
+    await loadMeet(meetId);
+    loadedMeets.add(meetId);
+    if (isMeetReady(meetId)) {
+      watchingMeets.add(meetId);
+      watchChanges(meetId); // runs forever, don't await
+    } else {
+      console.log(`[WAITING] Meet ${meetId} ("${getMeetState(meetId).meet?.name}") is on ${getMeetState(meetId).meet?.date} — will start polling on meet day`);
+    }
   } catch (err) {
-    console.error(`[FATAL] ${err.message}`);
-    console.log('[RESTART] Retrying in 10s...');
-    setTimeout(main, 10000);
+    console.error(`[MEET ERROR] Failed to start ${meetId}: ${err.message}`);
+  } finally {
+    pendingMeets.delete(meetId);
   }
 }
 
-main();
+// For backwards compat with /health endpoint
+const activeMeets = loadedMeets;
+
+// --- Poll for new meets from subscriptions + start watching meets that have reached their date ---
+// Also cleans up stale meets (ended more than 2 days ago) to stop wasting resources.
+const STALE_MEET_DAYS = 2;
+
+function isMeetStale(meetId) {
+  const st = meets[meetId];
+  if (!st || !st.meet) return false;
+  const meetDate = parseMeetDate(st.meet);
+  if (!meetDate) return false;
+  const cutoff = new Date();
+  cutoff.setHours(0, 0, 0, 0);
+  cutoff.setDate(cutoff.getDate() - STALE_MEET_DAYS);
+  return meetDate < cutoff;
+}
+
+async function pollForNewMeets() {
+  while (!shuttingDown) {
+    try {
+      const meetIds = await getAllMeetIds();
+      for (const mid of meetIds) {
+        if (!loadedMeets.has(mid) && !pendingMeets.has(mid)) {
+          console.log(`[NEW MEET] Found subscription for meet ${mid}, loading...`);
+          startMeet(mid);
+        }
+      }
+      // Check if any loaded-but-not-watching meets are now ready
+      for (const mid of loadedMeets) {
+        if (!watchingMeets.has(mid) && isMeetReady(mid)) {
+          console.log(`[MEET DAY] Meet ${mid} ("${getMeetState(mid).meet?.name}") is starting — re-fetching docs and beginning changes feed`);
+          // Re-fetch all docs since the roster may have changed since initial load
+          try {
+            const dbUrl = `${couchdbBase}/${mid}_readonly`;
+            const dbInfo = await fetchJSON(dbUrl);
+            getMeetState(mid).lastSeq = dbInfo.update_seq || '0';
+            const result = await fetchJSON(`${dbUrl}/_all_docs?include_docs=true`);
+            for (const row of result.rows) {
+              if (row.doc) processDoc(mid, row.doc);
+            }
+            console.log(`[MEET DAY] Re-loaded ${result.rows.length} docs for ${mid}`);
+          } catch (e) {
+            console.error(`[MEET DAY ERROR] Failed to re-fetch docs for ${mid}: ${e.message} — starting changes feed anyway`);
+          }
+          watchingMeets.add(mid);
+          watchChanges(mid);
+        }
+      }
+      // Clean up stale meets (ended more than STALE_MEET_DAYS ago)
+      for (const mid of [...watchingMeets]) {
+        if (isMeetStale(mid)) {
+          console.log(`[CLEANUP] Stopping changes feed for stale meet ${mid} ("${getMeetState(mid).meet?.name}")`);
+          watchingMeets.delete(mid);
+          // watchChanges loop will exit on next iteration via shuttingDown or the meet being removed from watchingMeets
+        }
+      }
+    } catch (err) {
+      console.error(`[POLL ERROR] ${err.message}`);
+    }
+    await new Promise(r => setTimeout(r, 30000)); // check every 30s
+  }
+}
+
+// --- Parse URL-encoded form body ---
+function parseFormBody(body) {
+  const params = new URLSearchParams(body);
+  return Object.fromEntries(params.entries());
+}
+
+// --- HTML subscription form ---
+const FORM_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LiftAlert - Get Notified</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .card { background: #1e293b; border-radius: 12px; padding: 2rem; max-width: 420px; width: 90%; box-shadow: 0 4px 24px rgba(0,0,0,0.3); }
+    h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+    .subtitle { color: #94a3b8; margin-bottom: 1.5rem; font-size: 0.9rem; }
+    label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.25rem; margin-top: 1rem; }
+    input { width: 100%; padding: 0.6rem 0.75rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: 1rem; }
+    input:focus { outline: none; border-color: #3b82f6; }
+    button { margin-top: 1.5rem; width: 100%; padding: 0.7rem; border: none; border-radius: 6px; background: #3b82f6; color: white; font-size: 1rem; font-weight: 600; cursor: pointer; }
+    button:hover { background: #2563eb; }
+    .help { font-size: 0.75rem; color: #64748b; margin-top: 0.25rem; }
+    .msg { margin-top: 1rem; padding: 0.75rem; border-radius: 6px; font-size: 0.9rem; }
+    .msg.ok { background: #064e3b; color: #6ee7b7; }
+    .msg.err { background: #7f1d1d; color: #fca5a5; }
+    .autocomplete-wrapper { position: relative; }
+    .suggestions { position: absolute; top: 100%; left: 0; right: 0; background: #1e293b; border: 1px solid #334155; border-top: none; border-radius: 0 0 6px 6px; max-height: 240px; overflow-y: auto; z-index: 10; display: none; }
+    .suggestion-item { padding: 0.5rem 0.75rem; cursor: pointer; }
+    .suggestion-item:hover, .suggestion-item.active { background: #334155; }
+    .suggestion-item .name { color: #e2e8f0; }
+    .suggestion-item .meet-name { color: #64748b; font-size: 0.8rem; }
+    .selected-meet { font-size: 0.8rem; color: #6ee7b7; margin-top: 0.25rem; display: none; }
+    .selected-pill { display: none; margin-top: 0.75rem; padding: 0.5rem 0.75rem; background: #064e3b; border-radius: 6px; align-items: center; justify-content: space-between; }
+    .selected-pill .pill-text { color: #6ee7b7; font-size: 0.85rem; }
+    .selected-pill .pill-text .pill-meet { color: #94a3b8; font-size: 0.75rem; }
+    .selected-pill .pill-clear { color: #94a3b8; cursor: pointer; font-size: 1.1rem; padding: 0 0.25rem; }
+    .selected-pill .pill-clear:hover { color: #fca5a5; }
+    .no-results { padding: 0.5rem 0.75rem; color: #64748b; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>LiftAlert</h1>
+    <p class="subtitle">Get email alerts when your lifter is on deck.</p>
+    <form method="POST" action="/subscribe" id="subForm">
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" required placeholder="you@example.com">
+
+      <label for="lifterInput">Lifter Name</label>
+      <div class="autocomplete-wrapper" id="autocompleteWrapper">
+        <input type="text" id="lifterInput" placeholder="Start typing a lifter name..." autocomplete="off">
+        <div class="suggestions" id="suggestions"></div>
+      </div>
+      <p class="help">Select a lifter from the dropdown</p>
+
+      <input type="hidden" id="lifterHidden" name="lifter">
+      <input type="hidden" id="meetHidden" name="meet">
+      <div class="selected-pill" id="selectedPill">
+        <span class="pill-text"><span id="pillName"></span><br><span class="pill-meet" id="pillMeet"></span></span>
+        <span class="pill-clear" id="pillClear" title="Clear selection">&times;</span>
+      </div>
+
+      <button type="submit">Subscribe</button>
+    </form>
+  </div>
+  <script>
+    const lifterInput = document.getElementById('lifterInput');
+    const suggestionsEl = document.getElementById('suggestions');
+    const lifterHidden = document.getElementById('lifterHidden');
+    const meetHidden = document.getElementById('meetHidden');
+    const selectedPill = document.getElementById('selectedPill');
+    const pillName = document.getElementById('pillName');
+    const pillMeet = document.getElementById('pillMeet');
+    const pillClear = document.getElementById('pillClear');
+    const autocompleteWrapper = document.getElementById('autocompleteWrapper');
+    const form = document.getElementById('subForm');
+
+    let activeIdx = -1;
+    let currentResults = [];
+    let allLifters = [];
+
+    // Load all lifters once on page load
+    fetch('/api/lifters').then(r => r.json()).then(data => { allLifters = data; });
+
+    // Block submit unless a lifter was selected from dropdown
+    form.addEventListener('submit', (e) => {
+      if (!lifterHidden.value || !meetHidden.value) {
+        e.preventDefault();
+        lifterInput.focus();
+        lifterInput.style.borderColor = '#ef4444';
+        setTimeout(() => { lifterInput.style.borderColor = ''; }, 2000);
+      }
+    });
+
+    lifterInput.addEventListener('input', () => {
+      const q = lifterInput.value.trim().toLowerCase();
+      if (q.length < 2) { closeSuggestions(); return; }
+      filterSuggestions(q);
+    });
+
+    lifterInput.addEventListener('keydown', (e) => {
+      if (suggestionsEl.style.display === 'none') return;
+      const items = suggestionsEl.querySelectorAll('.suggestion-item');
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        activeIdx = Math.min(activeIdx + 1, items.length - 1);
+        updateActive(items);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        activeIdx = Math.max(activeIdx - 1, 0);
+        updateActive(items);
+      } else if (e.key === 'Enter' && activeIdx >= 0) {
+        e.preventDefault();
+        selectResult(currentResults[activeIdx]);
+      } else if (e.key === 'Escape') {
+        closeSuggestions();
+      }
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.autocomplete-wrapper')) closeSuggestions();
+    });
+
+    pillClear.addEventListener('click', clearSelection);
+
+    function clearSelection() {
+      lifterHidden.value = '';
+      meetHidden.value = '';
+      selectedPill.style.display = 'none';
+      autocompleteWrapper.style.display = 'block';
+      lifterInput.value = '';
+      lifterInput.focus();
+    }
+
+    function updateActive(items) {
+      items.forEach((el, i) => el.classList.toggle('active', i === activeIdx));
+      if (items[activeIdx]) items[activeIdx].scrollIntoView({ block: 'nearest' });
+    }
+
+    function closeSuggestions() {
+      suggestionsEl.style.display = 'none';
+      activeIdx = -1;
+      currentResults = [];
+    }
+
+    function selectResult(r) {
+      lifterHidden.value = r.name;
+      meetHidden.value = r.meetId;
+      pillName.textContent = r.name;
+      pillMeet.textContent = r.meetName;
+      selectedPill.style.display = 'flex';
+      autocompleteWrapper.style.display = 'none';
+      lifterInput.value = '';
+      closeSuggestions();
+    }
+
+    function filterSuggestions(q) {
+      const data = allLifters.filter(l => l.name.toLowerCase().includes(q)).slice(0, 20);
+      currentResults = data;
+      activeIdx = -1;
+      if (data.length === 0) {
+        suggestionsEl.innerHTML = '<div class="no-results">No lifters found</div>';
+        suggestionsEl.style.display = 'block';
+        return;
+      }
+      suggestionsEl.innerHTML = data.map((r, i) =>
+        '<div class="suggestion-item" data-idx="' + i + '">' +
+          '<div class="name">' + escHtml(r.name) + '</div>' +
+          '<div class="meet-name">' + escHtml(r.meetName) + '</div>' +
+        '</div>'
+      ).join('');
+      suggestionsEl.style.display = 'block';
+      suggestionsEl.querySelectorAll('.suggestion-item').forEach(el => {
+        el.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          selectResult(currentResults[parseInt(el.dataset.idx)]);
+        });
+      });
+    }
+
+    function escHtml(s) {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+  </script>
+</body>
+</html>`;
+
+function errorHTML(msg) {
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Error</title>
+<style>* { box-sizing: border-box; margin: 0; padding: 0; } body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; } .card { background: #1e293b; border-radius: 12px; padding: 2rem; max-width: 420px; width: 90%; text-align: center; } h1 { color: #fca5a5; margin-bottom: 0.5rem; } p { color: #94a3b8; } a { color: #3b82f6; }</style>
+</head><body><div class="card"><h1>Error</h1><p>${msg}</p><br><a href="/">Go back</a></div></body></html>`;
+}
+
+function successHTML(lifter, meetId, allSubs) {
+  const meetName = meets[meetId]?.meet?.name || meetId;
+
+  const subsRows = allSubs.map(s => {
+    const mName = meets[s.meet_id]?.meet?.name || s.meet_id;
+    const meetDate = meets[s.meet_id]?.meet?.date || '';
+    const meetLocation = meets[s.meet_id]?.meet?.location || meets[s.meet_id]?.meet?.city || '';
+    const details = [meetDate, meetLocation].filter(Boolean).join(' &middot; ');
+    const unsubUrl = `/unsubscribe?email=${encodeURIComponent(s.email || '')}&lifter=${encodeURIComponent(s.lifter_name)}&meet=${encodeURIComponent(s.meet_id)}`;
+    return `<tr>
+      <td style="padding:0.4rem 0.5rem">${s.lifter_name}</td>
+      <td style="padding:0.4rem 0.5rem">${mName}${details ? '<br><span style="font-size:0.75rem;color:#64748b">' + details + '</span>' : ''}</td>
+      <td style="padding:0.4rem 0.5rem"><a href="${unsubUrl}" style="color:#f87171;font-size:0.8rem">remove</a></td>
+    </tr>`;
+  }).join('');
+
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Subscribed!</title>
+<style>* { box-sizing: border-box; margin: 0; padding: 0; } body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem; } .card { background: #1e293b; border-radius: 12px; padding: 2rem; max-width: 520px; width: 100%; } h1 { color: #6ee7b7; margin-bottom: 0.5rem; text-align: center; } .subtitle { color: #94a3b8; text-align: center; margin-bottom: 1.5rem; } a { color: #3b82f6; } h2 { font-size: 1rem; color: #94a3b8; margin-bottom: 0.5rem; } table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; } th { text-align: left; padding: 0.4rem 0.5rem; color: #64748b; font-size: 0.75rem; border-bottom: 1px solid #334155; } td { border-bottom: 1px solid #1e293b; font-size: 0.85rem; } .cta { text-align: center; margin-top: 1rem; }</style>
+</head><body><div class="card"><h1>Subscribed!</h1><p class="subtitle">You'll get an email when <strong>${lifter}</strong> is on deck at <strong>${meetName}</strong>.</p><h2>Your Subscriptions</h2><table><thead><tr><th>Lifter</th><th>Meet</th><th></th></tr></thead><tbody>${subsRows}</tbody></table><div class="cta"><a href="/">Subscribe to another lifter</a></div></div></body></html>`;
+}
+
+function unsubHTML(success) {
+  const msg = success ? 'You have been unsubscribed.' : 'Subscription not found (may already be removed).';
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Unsubscribed</title>
+<style>* { box-sizing: border-box; margin: 0; padding: 0; } body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; } .card { background: #1e293b; border-radius: 12px; padding: 2rem; max-width: 420px; width: 90%; text-align: center; } p { color: #94a3b8; } a { color: #3b82f6; }</style>
+</head><body><div class="card"><p>${msg}</p><br><a href="/">Back to LiftAlert</a></div></body></html>`;
+}
+
+// --- HTTP Server ---
+const PORT = process.env.PORT || 3000;
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+
+  if (req.method === 'GET' && url.pathname === '/') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(FORM_HTML);
+
+  } else if (req.method === 'POST' && url.pathname === '/subscribe') {
+    let body = '';
+    let tooLarge = false;
+    const MAX_BODY = 8192; // 8KB — more than enough for a subscription form
+    for await (const chunk of req) {
+      body += chunk;
+      if (body.length > MAX_BODY) { tooLarge = true; break; }
+    }
+    if (tooLarge) {
+      res.writeHead(413, { 'Content-Type': 'text/plain' });
+      res.end('Request body too large');
+      return;
+    }
+    const { email, lifter, meet } = parseFormBody(body);
+
+    if (!email || !lifter || !meet) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('Missing required fields: email, lifter, meet');
+      return;
+    }
+
+    // Validate lifter exists in the specified meet
+    const meetState = meets[meet];
+    if (!meetState) {
+      res.writeHead(400, { 'Content-Type': 'text/html' });
+      res.end(errorHTML('Meet not found. Please select a lifter from the dropdown.'));
+      return;
+    }
+    const lifterLower = lifter.toLowerCase();
+    const lifterExists = Object.values(meetState.lifters).some(l => l.name && l.name.toLowerCase() === lifterLower);
+    if (!lifterExists) {
+      res.writeHead(400, { 'Content-Type': 'text/html' });
+      res.end(errorHTML('Lifter not found in this meet. Please select a lifter from the dropdown.'));
+      return;
+    }
+
+    try {
+      await addSubscription(email, lifter, meet);
+      console.log(`[SUBSCRIBE] ${email} -> "${lifter}" in meet ${meet}`);
+      startMeet(meet);
+      const meetName = meets[meet]?.meet?.name || meet;
+      const meetDate = meets[meet]?.meet?.date || '';
+      sendSubscriptionConfirmation(email, lifter, meetName, meetDate, meet);
+      const allSubs = await getSubscriptionsByEmail(email);
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(successHTML(lifter, meet, allSubs));
+    } catch (err) {
+      console.error(`[SUBSCRIBE ERROR] ${err.message}`);
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Failed to subscribe. Please try again.');
+    }
+
+  } else if (req.method === 'GET' && url.pathname === '/unsubscribe') {
+    const email = url.searchParams.get('email');
+    const lifter = url.searchParams.get('lifter');
+    const meet = url.searchParams.get('meet');
+
+    if (!email || !lifter || !meet) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('Missing required params: email, lifter, meet');
+      return;
+    }
+
+    try {
+      const removed = await removeSubscription(email, lifter, meet);
+      console.log(`[UNSUBSCRIBE] ${email} -> "${lifter}" in meet ${meet} (${removed ? 'removed' : 'not found'})`);
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(unsubHTML(removed));
+    } catch (err) {
+      console.error(`[UNSUBSCRIBE ERROR] ${err.message}`);
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Failed to unsubscribe. Please try again.');
+    }
+
+  } else if (url.pathname === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: 'ok',
+      tracking: trackName || null,
+      activeMeets: [...activeMeets],
+      totalLifters: Object.values(meets).reduce((sum, m) => sum + Object.keys(m.lifters).length, 0),
+    }));
+
+  } else if (url.pathname === '/state') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    const allMeets = {};
+    for (const [mid, st] of Object.entries(meets)) {
+      const summary = {};
+      for (const [pid, platform] of Object.entries(st.platforms)) {
+        const parsed = parseAttemptId(platform.currentAttemptId);
+        const currentLifter = parsed ? st.lifters[parsed.lifterId] : null;
+        const order = computeAttemptOrder(st, pid);
+        let currentIdx = -1;
+        if (platform.currentAttemptId) {
+          currentIdx = order.findIndex(a => a.attemptId === platform.currentAttemptId);
+        }
+        const nextUp = currentIdx >= 0 ? order.slice(currentIdx + 1, currentIdx + 6).map(a => ({
+          name: a.lifterName, lift: a.liftName, attempt: a.attemptNumber,
+        })) : [];
+
+        summary[pid] = {
+          platformName: platform.name,
+          currentLifter: currentLifter?.name || null,
+          liftName: parsed?.liftName || null,
+          attemptNumber: parsed?.attemptNumber || null,
+          nextUp,
+        };
+      }
+      allMeets[mid] = { meetName: st.meet?.name || mid, platforms: summary };
+    }
+    res.end(JSON.stringify(allMeets, null, 2));
+
+  } else if (req.method === 'GET' && url.pathname === '/api/lifters') {
+    const results = [];
+    for (const [meetId, st] of Object.entries(meets)) {
+      const meetName = st.meet?.name || meetId;
+      for (const lifter of Object.values(st.lifters)) {
+        if (lifter.name) {
+          results.push({ name: lifter.name, meetId, meetName });
+        }
+      }
+    }
+    results.sort((a, b) => a.name.localeCompare(b.name));
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(results));
+
+  } else {
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Not found');
+  }
+});
+
+// --- Main ---
+async function main() {
+  console.log('\n=== LiftAlert CouchDB Client ===');
+  console.log(`CouchDB: ${couchdbBase}`);
+  if (trackName) console.log(`Console tracking: "${trackName}"`);
+  console.log('');
+
+  // Start HTTP server first (Railway healthcheck needs it immediately)
+  server.listen(PORT, () => {
+    console.log(`[HTTP] Server listening on port ${PORT}`);
+  });
+
+  // Initialize database
+  try {
+    await initDB();
+  } catch (err) {
+    console.error(`[DB ERROR] ${err.message}`);
+    console.log('[DB] Continuing without database — subscription features disabled');
+  }
+
+  // Load CLI-specified meet
+  if (cliMeetId) {
+    try {
+      await startMeet(cliMeetId);
+    } catch (err) {
+      console.error(`[FATAL] Failed to load meet ${cliMeetId}: ${err.message}`);
+    }
+  }
+
+  // Load meets from existing subscriptions
+  try {
+    const dbMeets = await getAllMeetIds();
+    for (const mid of dbMeets) {
+      startMeet(mid);
+    }
+  } catch (err) {
+    console.error(`[DB ERROR] Could not load subscription meets: ${err.message}`);
+  }
+
+  // Periodically check for new subscription meets
+  pollForNewMeets();
+}
+
+main().catch(err => {
+  console.error(`[FATAL] ${err.message}`);
+  process.exit(1);
+});
+
+// --- Graceful shutdown on SIGTERM/SIGINT ---
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`\n[SHUTDOWN] Received ${signal}, closing gracefully...`);
+
+  // Stop accepting new connections, let in-flight requests finish
+  server.close(() => {
+    console.log('[SHUTDOWN] HTTP server closed');
+    process.exit(0);
+  });
+
+  // Force exit if server doesn't close within 5 seconds
+  setTimeout(() => {
+    console.log('[SHUTDOWN] Forcing exit after timeout');
+    process.exit(0);
+  }, 5000).unref();
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
