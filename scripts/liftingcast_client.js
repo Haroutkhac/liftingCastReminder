@@ -82,28 +82,37 @@ function getMeetState(meetId) {
 
 // --- Compute attempt order for a platform ---
 function computeAttemptOrder(meetState, platformId) {
-  const platformLifters = Object.values(meetState.lifters).filter(l => l.platformId === platformId);
+  const platformLifterIds = new Set(
+    Object.values(meetState.lifters)
+      .filter(l => l.platformId === platformId)
+      .map(l => l._id)
+  );
   const pending = [];
 
-  for (const lifter of platformLifters) {
-    if (!lifter.lifts) continue;
-    for (const [liftName, attempts] of Object.entries(lifter.lifts)) {
-      for (const [attemptNum, attempt] of Object.entries(attempts)) {
-        if (attemptNum === '4') continue;
-        if (attempt.result !== null && attempt.result !== undefined && attempt.result !== '') continue;
-        pending.push({
-          lifterId: lifter._id,
-          lifterName: lifter.name,
-          liftName,
-          attemptNumber: attemptNum,
-          weight: attempt.weight || 9999,
-          lot: lifter.lot || 999,
-          session: lifter.session || 1,
-          flight: lifter.flight || 'Z',
-          attemptId: attempt.id || `a${attemptNum}${liftName[0]}-${lifter._id}`,
-        });
-      }
-    }
+  for (const [attemptId, attempt] of Object.entries(meetState.attempts)) {
+    if (!attempt.lifterId || !platformLifterIds.has(attempt.lifterId)) continue;
+    if (attempt.attemptNumber === '4') continue;
+    // Skip completed attempts (result is "good" or "bad")
+    if (attempt.result === 'good' || attempt.result === 'bad') continue;
+    // Skip attempts with no weight set
+    const weight = (typeof attempt.weight === 'number' && attempt.weight > 0) ? attempt.weight : null;
+    if (weight === null) continue;
+
+    const lifter = meetState.lifters[attempt.lifterId];
+    if (!lifter) continue;
+
+    pending.push({
+      lifterId: attempt.lifterId,
+      lifterName: lifter.name,
+      liftName: attempt.liftName,
+      attemptNumber: attempt.attemptNumber,
+      weight,
+      lot: lifter.lot || 999,
+      session: lifter.session || 1,
+      flight: lifter.flight || 'Z',
+      endOfRound: attempt.endOfRound || 0,
+      attemptId: attempt._id,
+    });
   }
 
   pending.sort((a, b) => {
@@ -111,6 +120,7 @@ function computeAttemptOrder(meetState, platformId) {
     if (LIFT_ORDER[a.liftName] !== LIFT_ORDER[b.liftName]) return LIFT_ORDER[a.liftName] - LIFT_ORDER[b.liftName];
     if (a.flight !== b.flight) return a.flight.localeCompare(b.flight);
     if (a.attemptNumber !== b.attemptNumber) return a.attemptNumber - b.attemptNumber;
+    if (a.endOfRound !== b.endOfRound) return a.endOfRound - b.endOfRound;
     if (a.weight !== b.weight) return a.weight - b.weight;
     return a.lot - b.lot;
   });
@@ -309,7 +319,7 @@ async function watchChanges(meetId) {
         for (const change of changes.results) {
           if (change.doc) {
             processDoc(meetId, change.doc);
-            if (change.id.startsWith('p') || change.id.startsWith('l')) needsCheck = true;
+            if (change.id.startsWith('p') || change.id.startsWith('l') || change.id.startsWith('a')) needsCheck = true;
           }
         }
         if (needsCheck) checkPlatforms(meetId);
