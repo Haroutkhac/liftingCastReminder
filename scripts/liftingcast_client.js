@@ -155,7 +155,7 @@ async function notifySubscribers(meetId, lifterName, liftName, position) {
     const nameLower = lifterName.toLowerCase();
 
     for (const sub of subs) {
-      if (nameLower.includes(sub.lifter_name.toLowerCase())) {
+      if (nameLower === sub.lifter_name.toLowerCase()) {
         sendOnDeckEmail(sub.email, lifterName, meetName, liftName, position, meetId, sub.lifter_name);
       }
     }
@@ -293,11 +293,7 @@ async function loadMeet(meetId) {
     process.exit(0);
   }
 
-  if (isMeetReady(meetId)) {
-    checkPlatforms(meetId);
-    st.lastSeq = startSeq;
-    console.log(`[SYNC] Starting changes feed for ${meetId} from seq: ${String(st.lastSeq).substring(0, 20)}...`);
-  }
+  st.lastSeq = startSeq;
 }
 
 // --- Graceful shutdown ---
@@ -362,27 +358,68 @@ function isMeetReady(meetId) {
   return meetDate <= today;
 }
 
+// --- Fetch today's meets from LiftingCast API ---
+const LIFTINGCAST_API = 'https://liftingcast.com/api/meets';
+
+function isMeetToday(meetEntry) {
+  const fmt = meetEntry.dateFormat || 'MM/DD/YYYY';
+  const parts = (meetEntry.date || '').split('/');
+  if (parts.length !== 3) return false;
+  let y, m, d;
+  if (fmt === 'DD/MM/YYYY') { [d, m, y] = parts; }
+  else { [m, d, y] = parts; }
+  const meetDate = new Date(Number(y), Number(m) - 1, Number(d));
+  if (isNaN(meetDate.getTime())) return false;
+  const today = new Date();
+  return meetDate.getFullYear() === today.getFullYear() &&
+         meetDate.getMonth() === today.getMonth() &&
+         meetDate.getDate() === today.getDate();
+}
+
+async function fetchTodaysMeetIds() {
+  try {
+    const data = await fetchJSON(LIFTINGCAST_API);
+    const allMeets = data.docs || [];
+    const todaysMeets = allMeets.filter(isMeetToday);
+    console.log(`[DISCOVER] LiftingCast API returned ${allMeets.length} meets, ${todaysMeets.length} are today`);
+    return todaysMeets.map(m => m._id);
+  } catch (err) {
+    console.error(`[DISCOVER ERROR] Failed to fetch meets from LiftingCast API: ${err.message}`);
+    return [];
+  }
+}
+
+// --- Load a meet's lifters for autocomplete only (no changes feed) ---
+async function indexMeet(meetId) {
+  if (loadedMeets.has(meetId) || pendingMeets.has(meetId)) return;
+  pendingMeets.add(meetId);
+  try {
+    await loadMeet(meetId);
+    loadedMeets.add(meetId);
+  } catch (err) {
+    console.error(`[INDEX ERROR] Failed to index ${meetId}: ${err.message}`);
+  } finally {
+    pendingMeets.delete(meetId);
+  }
+}
+
 // --- Start monitoring a meet (load + watch) ---
 const loadedMeets = new Set();  // meets with data loaded (for autocomplete)
 const watchingMeets = new Set(); // meets with active changes feed
 const pendingMeets = new Set();  // meets currently being loaded (prevents duplicate loads)
 
 async function startMeet(meetId) {
-  if (loadedMeets.has(meetId) || pendingMeets.has(meetId)) return;
-  pendingMeets.add(meetId);
-  try {
-    await loadMeet(meetId);
-    loadedMeets.add(meetId);
-    if (isMeetReady(meetId)) {
-      watchingMeets.add(meetId);
-      watchChanges(meetId); // runs forever, don't await
-    } else {
-      console.log(`[WAITING] Meet ${meetId} ("${getMeetState(meetId).meet?.name}") is on ${getMeetState(meetId).meet?.date} — will start polling on meet day`);
-    }
-  } catch (err) {
-    console.error(`[MEET ERROR] Failed to start ${meetId}: ${err.message}`);
-  } finally {
-    pendingMeets.delete(meetId);
+  // Ensure data is loaded first
+  await indexMeet(meetId);
+  if (!loadedMeets.has(meetId)) return; // indexMeet failed
+  // Start watching if not already and meet is ready
+  if (!watchingMeets.has(meetId) && isMeetReady(meetId)) {
+    checkPlatforms(meetId);
+    console.log(`[SYNC] Starting changes feed for ${meetId} from seq: ${String(getMeetState(meetId).lastSeq).substring(0, 20)}...`);
+    watchingMeets.add(meetId);
+    watchChanges(meetId); // runs forever, don't await
+  } else if (!isMeetReady(meetId)) {
+    console.log(`[WAITING] Meet ${meetId} ("${getMeetState(meetId).meet?.name}") is on ${getMeetState(meetId).meet?.date} — will start polling on meet day`);
   }
 }
 
@@ -391,7 +428,7 @@ const activeMeets = loadedMeets;
 
 // --- Poll for new meets from subscriptions + start watching meets that have reached their date ---
 // Also cleans up stale meets (ended more than 2 days ago) to stop wasting resources.
-const STALE_MEET_DAYS = 2;
+const STALE_MEET_DAYS = 5;
 
 function isMeetStale(meetId) {
   const st = meets[meetId];
@@ -404,21 +441,39 @@ function isMeetStale(meetId) {
   return meetDate < cutoff;
 }
 
+async function discoverTodaysMeets() {
+  const todaysMeetIds = await fetchTodaysMeetIds();
+  const newMeets = todaysMeetIds.filter(mid => !loadedMeets.has(mid) && !pendingMeets.has(mid));
+  if (newMeets.length > 0) {
+    console.log(`[DISCOVER] Indexing ${newMeets.length} new meets for autocomplete...`);
+    // Load meets in parallel, batched to avoid overwhelming CouchDB
+    const BATCH_SIZE = 5;
+    for (let i = 0; i < newMeets.length; i += BATCH_SIZE) {
+      const batch = newMeets.slice(i, i + BATCH_SIZE);
+      await Promise.all(batch.map(mid => indexMeet(mid)));
+    }
+  }
+}
+
 async function pollForNewMeets() {
   while (!shuttingDown) {
     try {
+      // Discover today's meets from LiftingCast API (for autocomplete)
+      await discoverTodaysMeets();
+
+      // Start changes feeds for meets with active subscriptions
       const meetIds = await getAllMeetIds();
       for (const mid of meetIds) {
         if (!loadedMeets.has(mid) && !pendingMeets.has(mid)) {
           console.log(`[NEW MEET] Found subscription for meet ${mid}, loading...`);
-          startMeet(mid);
         }
+        await startMeet(mid);
       }
-      // Check if any loaded-but-not-watching meets are now ready
+      // Check if any loaded-but-not-watching subscription meets are now ready
+      const subMeetSet = new Set(meetIds);
       for (const mid of loadedMeets) {
-        if (!watchingMeets.has(mid) && isMeetReady(mid)) {
+        if (subMeetSet.has(mid) && !watchingMeets.has(mid) && isMeetReady(mid)) {
           console.log(`[MEET DAY] Meet ${mid} ("${getMeetState(mid).meet?.name}") is starting — re-fetching docs and beginning changes feed`);
-          // Re-fetch all docs since the roster may have changed since initial load
           try {
             const dbUrl = `${couchdbBase}/${mid}_readonly`;
             const dbInfo = await fetchJSON(dbUrl);
@@ -440,13 +495,12 @@ async function pollForNewMeets() {
         if (isMeetStale(mid)) {
           console.log(`[CLEANUP] Stopping changes feed for stale meet ${mid} ("${getMeetState(mid).meet?.name}")`);
           watchingMeets.delete(mid);
-          // watchChanges loop will exit on next iteration via shuttingDown or the meet being removed from watchingMeets
         }
       }
     } catch (err) {
       console.error(`[POLL ERROR] ${err.message}`);
     }
-    await new Promise(r => setTimeout(r, 30000)); // check every 30s
+    await new Promise(r => setTimeout(r, 60000)); // check every 60s
   }
 }
 
@@ -642,6 +696,15 @@ const FORM_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+}
+
 function errorHTML(msg) {
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Error</title>
@@ -656,11 +719,11 @@ function successHTML(lifter, meetId, allSubs) {
     const mName = meets[s.meet_id]?.meet?.name || s.meet_id;
     const meetDate = meets[s.meet_id]?.meet?.date || '';
     const meetLocation = meets[s.meet_id]?.meet?.location || meets[s.meet_id]?.meet?.city || '';
-    const details = [meetDate, meetLocation].filter(Boolean).join(' &middot; ');
+    const details = [escHtml(meetDate), escHtml(meetLocation)].filter(Boolean).join(' &middot; ');
     const unsubUrl = `/unsubscribe?email=${encodeURIComponent(s.email || '')}&lifter=${encodeURIComponent(s.lifter_name)}&meet=${encodeURIComponent(s.meet_id)}`;
     return `<tr>
-      <td style="padding:0.4rem 0.5rem">${s.lifter_name}</td>
-      <td style="padding:0.4rem 0.5rem">${mName}${details ? '<br><span style="font-size:0.75rem;color:#64748b">' + details + '</span>' : ''}</td>
+      <td style="padding:0.4rem 0.5rem">${escHtml(s.lifter_name)}</td>
+      <td style="padding:0.4rem 0.5rem">${escHtml(mName)}${details ? '<br><span style="font-size:0.75rem;color:#64748b">' + details + '</span>' : ''}</td>
       <td style="padding:0.4rem 0.5rem"><a href="${unsubUrl}" style="color:#f87171;font-size:0.8rem">remove</a></td>
     </tr>`;
   }).join('');
@@ -668,7 +731,7 @@ function successHTML(lifter, meetId, allSubs) {
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Subscribed!</title>
 <style>* { box-sizing: border-box; margin: 0; padding: 0; } body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem; } .card { background: #1e293b; border-radius: 12px; padding: 2rem; max-width: 520px; width: 100%; } h1 { color: #6ee7b7; margin-bottom: 0.5rem; text-align: center; } .subtitle { color: #94a3b8; text-align: center; margin-bottom: 1.5rem; } a { color: #3b82f6; } h2 { font-size: 1rem; color: #94a3b8; margin-bottom: 0.5rem; } table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; } th { text-align: left; padding: 0.4rem 0.5rem; color: #64748b; font-size: 0.75rem; border-bottom: 1px solid #334155; } td { border-bottom: 1px solid #1e293b; font-size: 0.85rem; } .cta { text-align: center; margin-top: 1rem; }</style>
-</head><body><div class="card"><h1>Subscribed!</h1><p class="subtitle">You'll get an email when <strong>${lifter}</strong> is on deck at <strong>${meetName}</strong>.</p><h2>Your Subscriptions</h2><table><thead><tr><th>Lifter</th><th>Meet</th><th></th></tr></thead><tbody>${subsRows}</tbody></table><div class="cta"><a href="/">Subscribe to another lifter</a></div></div></body></html>`;
+</head><body><div class="card"><h1>Subscribed!</h1><p class="subtitle">You'll get an email when <strong>${escHtml(lifter)}</strong> is on deck at <strong>${escHtml(meetName)}</strong>.</p><h2>Your Subscriptions</h2><table><thead><tr><th>Lifter</th><th>Meet</th><th></th></tr></thead><tbody>${subsRows}</tbody></table><div class="cta"><a href="/">Subscribe to another lifter</a></div></div></body></html>`;
 }
 
 function unsubHTML(success) {
@@ -683,6 +746,7 @@ function unsubHTML(success) {
 const PORT = process.env.PORT || 3000;
 
 const server = http.createServer(async (req, res) => {
+  try {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
   if (req.method === 'GET' && url.pathname === '/') {
@@ -745,6 +809,37 @@ const server = http.createServer(async (req, res) => {
     const email = url.searchParams.get('email');
     const lifter = url.searchParams.get('lifter');
     const meet = url.searchParams.get('meet');
+
+    if (!email || !lifter || !meet) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('Missing required params: email, lifter, meet');
+      return;
+    }
+
+    const meetName = meets[meet]?.meet?.name || meet;
+    const confirmHtml = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Unsubscribe</title>
+<style>* { box-sizing: border-box; margin: 0; padding: 0; } body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; } .card { background: #1e293b; border-radius: 12px; padding: 2rem; max-width: 420px; width: 90%; text-align: center; } p { color: #94a3b8; margin-bottom: 1.5rem; } button { padding: 0.6rem 1.5rem; border: none; border-radius: 6px; background: #ef4444; color: white; font-size: 1rem; cursor: pointer; } a { color: #3b82f6; display: block; margin-top: 1rem; }</style>
+</head><body><div class="card">
+  <p>Remove alert for <strong style="color:#e2e8f0">${escHtml(lifter)}</strong> at <strong style="color:#e2e8f0">${escHtml(meetName)}</strong>?</p>
+  <form method="POST" action="/unsubscribe">
+    <input type="hidden" name="email" value="${escHtml(email)}">
+    <input type="hidden" name="lifter" value="${escHtml(lifter)}">
+    <input type="hidden" name="meet" value="${escHtml(meet)}">
+    <button type="submit">Yes, unsubscribe</button>
+  </form>
+  <a href="/">Cancel</a>
+</div></body></html>`;
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(confirmHtml);
+
+  } else if (req.method === 'POST' && url.pathname === '/unsubscribe') {
+    let body = '';
+    for await (const chunk of req) {
+      body += chunk;
+      if (body.length > 8192) break;
+    }
+    const { email, lifter, meet } = parseFormBody(body);
 
     if (!email || !lifter || !meet) {
       res.writeHead(400, { 'Content-Type': 'text/plain' });
@@ -819,6 +914,13 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('Not found');
   }
+  } catch (err) {
+    console.error(`[HTTP ERROR] ${err.message}`);
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Internal server error');
+    }
+  }
 });
 
 // --- Main ---
@@ -841,7 +943,10 @@ async function main() {
     console.log('[DB] Continuing without database — subscription features disabled');
   }
 
-  // Load CLI-specified meet
+  // Discover and index all of today's meets from LiftingCast API
+  await discoverTodaysMeets();
+
+  // Load CLI-specified meet (with changes feed)
   if (cliMeetId) {
     try {
       await startMeet(cliMeetId);
@@ -850,7 +955,7 @@ async function main() {
     }
   }
 
-  // Load meets from existing subscriptions
+  // Load meets from existing subscriptions (with changes feeds)
   try {
     const dbMeets = await getAllMeetIds();
     for (const mid of dbMeets) {
@@ -860,7 +965,7 @@ async function main() {
     console.error(`[DB ERROR] Could not load subscription meets: ${err.message}`);
   }
 
-  // Periodically check for new subscription meets
+  // Periodically discover new meets and check for new subscriptions
   pollForNewMeets();
 }
 
