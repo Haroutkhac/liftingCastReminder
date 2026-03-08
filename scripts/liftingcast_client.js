@@ -585,6 +585,7 @@ const FORM_HTML = `<!DOCTYPE html>
 
       <button type="submit">Subscribe</button>
     </form>
+    <div style="text-align:center;margin-top:1.25rem;"><a href="/my-subscriptions" style="color:#94a3b8;font-size:0.85rem;">Manage my subscriptions</a></div>
   </div>
   <script>
     const lifterInput = document.getElementById('lifterInput');
@@ -756,6 +757,52 @@ function unsubHTML(success) {
 </head><body><div class="card"><p>${msg}</p><br><a href="/">Back to LiftAlert</a></div></body></html>`;
 }
 
+function mySubscriptionsHTML(email, subs) {
+  const heading = email ? `Subscriptions for ${escHtml(email)}` : 'My Subscriptions';
+  let content = '';
+  if (email && subs.length === 0) {
+    content = `<p style="color:#94a3b8;text-align:center;margin:1.5rem 0;">No subscriptions found for this email.</p>`;
+  } else if (email) {
+    const rows = subs.map(s => {
+      const mName = meets[s.meet_id]?.meet?.name || s.meet_id;
+      const meetDate = meets[s.meet_id]?.meet?.date || '';
+      const meetLocation = meets[s.meet_id]?.meet?.location || meets[s.meet_id]?.meet?.city || '';
+      const details = [escHtml(meetDate), escHtml(meetLocation)].filter(Boolean).join(' &middot; ');
+      return `<tr>
+        <td style="padding:0.5rem 0.5rem">${escHtml(s.lifter_name)}</td>
+        <td style="padding:0.5rem 0.5rem">${escHtml(mName)}${details ? '<br><span style="font-size:0.75rem;color:#64748b">' + details + '</span>' : ''}</td>
+        <td style="padding:0.5rem 0.5rem;text-align:right">
+          <form method="POST" action="/unsubscribe" style="display:inline" onsubmit="return confirm('Remove alert for ${escHtml(s.lifter_name).replace(/'/g, "\\'")}?')">
+            <input type="hidden" name="email" value="${escHtml(s.email)}">
+            <input type="hidden" name="lifter" value="${escHtml(s.lifter_name)}">
+            <input type="hidden" name="meet" value="${escHtml(s.meet_id)}">
+            <input type="hidden" name="return" value="my-subscriptions">
+            <button type="submit" style="background:none;border:none;color:#f87171;cursor:pointer;font-size:0.85rem;padding:0.25rem 0.5rem;">remove</button>
+          </form>
+        </td>
+      </tr>`;
+    }).join('');
+    content = `<table style="width:100%;border-collapse:collapse;margin-top:1rem;">
+      <thead><tr><th style="text-align:left;padding:0.4rem 0.5rem;color:#64748b;font-size:0.75rem;border-bottom:1px solid #334155;">Lifter</th><th style="text-align:left;padding:0.4rem 0.5rem;color:#64748b;font-size:0.75rem;border-bottom:1px solid #334155;">Meet</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  }
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>My Subscriptions - LiftAlert</title>
+<style>* { box-sizing: border-box; margin: 0; padding: 0; } body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem; } .card { background: #1e293b; border-radius: 12px; padding: 2rem; max-width: 520px; width: 100%; box-shadow: 0 4px 24px rgba(0,0,0,0.3); } h1 { font-size: 1.5rem; margin-bottom: 0.25rem; } .subtitle { color: #94a3b8; margin-bottom: 1.5rem; font-size: 0.9rem; } label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.25rem; } input { width: 100%; padding: 0.6rem 0.75rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: 1rem; } input:focus { outline: none; border-color: #3b82f6; } button { margin-top: 1rem; width: 100%; padding: 0.7rem; border: none; border-radius: 6px; background: #3b82f6; color: white; font-size: 1rem; font-weight: 600; cursor: pointer; } button:hover { background: #2563eb; } a { color: #3b82f6; } table td { border-bottom: 1px solid #334155; font-size: 0.85rem; }</style>
+</head><body><div class="card">
+  <h1>${heading}</h1>
+  <p class="subtitle">View and manage your LiftAlert subscriptions.</p>
+  <form method="GET" action="/my-subscriptions">
+    <label for="email">Email</label>
+    <input type="email" id="email" name="email" required placeholder="you@example.com" value="${email ? escHtml(email) : ''}">
+    <button type="submit">Look up</button>
+  </form>
+  ${content}
+  <div style="text-align:center;margin-top:1.25rem;"><a href="/" style="color:#94a3b8;font-size:0.85rem;">Subscribe to a lifter</a></div>
+</div></body></html>`;
+}
+
 // --- HTTP Server ---
 const PORT = process.env.PORT || 3000;
 
@@ -766,6 +813,19 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/') {
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(FORM_HTML);
+
+  } else if (req.method === 'GET' && url.pathname === '/my-subscriptions') {
+    const email = url.searchParams.get('email') || '';
+    let subs = [];
+    if (email) {
+      try {
+        subs = await getSubscriptionsByEmail(email);
+      } catch (err) {
+        console.error(`[LOOKUP ERROR] ${err.message}`);
+      }
+    }
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(mySubscriptionsHTML(email, subs));
 
   } else if (req.method === 'POST' && url.pathname === '/subscribe') {
     let body = '';
@@ -853,7 +913,9 @@ const server = http.createServer(async (req, res) => {
       body += chunk;
       if (body.length > 8192) break;
     }
-    const { email, lifter, meet } = parseFormBody(body);
+    const formData = parseFormBody(body);
+    const { email, lifter, meet } = formData;
+    const returnTo = formData.return;
 
     if (!email || !lifter || !meet) {
       res.writeHead(400, { 'Content-Type': 'text/plain' });
@@ -864,8 +926,13 @@ const server = http.createServer(async (req, res) => {
     try {
       const removed = await removeSubscription(email, lifter, meet);
       console.log(`[UNSUBSCRIBE] ${email} -> "${lifter}" in meet ${meet} (${removed ? 'removed' : 'not found'})`);
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(unsubHTML(removed));
+      if (returnTo === 'my-subscriptions') {
+        res.writeHead(302, { 'Location': `/my-subscriptions?email=${encodeURIComponent(email)}` });
+        res.end();
+      } else {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(unsubHTML(removed));
+      }
     } catch (err) {
       console.error(`[UNSUBSCRIBE ERROR] ${err.message}`);
       res.writeHead(500, { 'Content-Type': 'text/plain' });

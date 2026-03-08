@@ -50,7 +50,7 @@ async function addSubscription(email, lifterName, meetId) {
 
 async function getSubscriptionsByEmail(email) {
   const { rows } = await pool.query(
-    'SELECT lifter_name, meet_id, created_at FROM subscriptions WHERE email = $1 ORDER BY created_at DESC',
+    'SELECT email, lifter_name, meet_id, created_at FROM subscriptions WHERE email = $1 ORDER BY created_at DESC',
     [email]
   );
   return rows;
