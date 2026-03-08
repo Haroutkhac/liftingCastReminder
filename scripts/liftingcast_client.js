@@ -151,12 +151,14 @@ function processDoc(meetId, doc) {
 async function notifySubscribers(meetId, lifterName, liftName, position) {
   try {
     const subs = await getSubscriptions(meetId);
+    if (subs.length === 0) return;
     const meetName = getMeetState(meetId).meet?.name || meetId;
     const nameLower = lifterName.toLowerCase();
 
     for (const sub of subs) {
       if (nameLower === sub.lifter_name.toLowerCase()) {
-        sendOnDeckEmail(sub.email, lifterName, meetName, liftName, position, meetId, sub.lifter_name);
+        console.log(`[NOTIFY] Match: "${lifterName}" is ${position} — notifying ${sub.email}`);
+        await sendOnDeckEmail(sub.email, lifterName, meetName, liftName, position, meetId, sub.lifter_name);
       }
     }
   } catch (err) {
