@@ -370,10 +370,15 @@ function isMeetToday(meetEntry) {
   else { [m, d, y] = parts; }
   const meetDate = new Date(Number(y), Number(m) - 1, Number(d));
   if (isNaN(meetDate.getTime())) return false;
-  const today = new Date();
-  return meetDate.getFullYear() === today.getFullYear() &&
-         meetDate.getMonth() === today.getMonth() &&
-         meetDate.getDate() === today.getDate();
+  // Match today AND tomorrow to handle timezone differences
+  // (server runs UTC, meets are in local time — e.g. a US meet on March 8
+  // needs to be discoverable when UTC is still March 7 evening)
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  return meetDate.getTime() === today.getTime() ||
+         meetDate.getTime() === tomorrow.getTime();
 }
 
 async function fetchTodaysMeetIds() {
@@ -427,18 +432,12 @@ async function startMeet(meetId) {
 const activeMeets = loadedMeets;
 
 // --- Poll for new meets from subscriptions + start watching meets that have reached their date ---
-// Also cleans up stale meets (ended more than 2 days ago) to stop wasting resources.
-const STALE_MEET_DAYS = 5;
-
+// Cleans up changes feeds for meets that ended (not today/tomorrow).
 function isMeetStale(meetId) {
   const st = meets[meetId];
   if (!st || !st.meet) return false;
-  const meetDate = parseMeetDate(st.meet);
-  if (!meetDate) return false;
-  const cutoff = new Date();
-  cutoff.setHours(0, 0, 0, 0);
-  cutoff.setDate(cutoff.getDate() - STALE_MEET_DAYS);
-  return meetDate < cutoff;
+  // A meet is stale if its date is before today (not today, not tomorrow)
+  return !isMeetToday(st.meet);
 }
 
 async function discoverTodaysMeets() {
@@ -490,11 +489,22 @@ async function pollForNewMeets() {
           watchChanges(mid);
         }
       }
-      // Clean up stale meets (ended more than STALE_MEET_DAYS ago)
+      // Clean up stale meets — stop changes feeds and remove from index
+      // (keeps subscribed meets that still have active subs, even if stale)
+      const subMeetIds = new Set(meetIds);
       for (const mid of [...watchingMeets]) {
-        if (isMeetStale(mid)) {
+        if (isMeetStale(mid) && !subMeetIds.has(mid)) {
           console.log(`[CLEANUP] Stopping changes feed for stale meet ${mid} ("${getMeetState(mid).meet?.name}")`);
           watchingMeets.delete(mid);
+        }
+      }
+      // Remove stale indexed meets (frees memory, clears old lifters from autocomplete)
+      for (const mid of [...loadedMeets]) {
+        if (isMeetStale(mid) && !subMeetIds.has(mid)) {
+          console.log(`[CLEANUP] Removing stale meet ${mid} ("${getMeetState(mid).meet?.name}") from index`);
+          loadedMeets.delete(mid);
+          watchingMeets.delete(mid);
+          delete meets[mid];
         }
       }
     } catch (err) {
