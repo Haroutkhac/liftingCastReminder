@@ -30,7 +30,7 @@ function cleanupSentCache() {
 setInterval(cleanupSentCache, 5 * 60 * 1000).unref();
 
 async function sendOnDeckEmail(toEmail, lifterName, meetName, liftName, position, meetId, subLifterName) {
-  const dedupKey = `${toEmail}:${lifterName}:${liftName}:${position}`;
+  const dedupKey = `${toEmail}:${meetId}:${lifterName}:${liftName}:${position}`;
   if (recentlySent.has(dedupKey)) return false;
 
   const positionLabel =
@@ -102,6 +102,7 @@ async function sendSubscriptionConfirmation(toEmail, lifterName, meetName, meetD
           ${meetDate ? `<tr><td style="padding:4px 12px 4px 0;color:#888;">Date</td><td style="padding:4px 0;">${meetDate}</td></tr>` : ''}
         </table>
         <p style="font-size:13px;color:#888;">No action needed — we'll email you automatically when it's almost time for ${lifterName} to lift.</p>
+        <p style="font-size:13px;color:#e6a817;background:#2a2a1a;padding:8px 12px;border-radius:6px;margin:12px 0;"><strong>Important:</strong> Check your spam/junk folder and mark this email as "Not Spam" so you don't miss alerts!</p>
         <hr>
         <p style="font-size:12px;color:#888;">
           <a href="${unsubLink}">Unsubscribe from alerts for ${lifterName}</a>
