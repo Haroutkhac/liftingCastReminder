@@ -396,7 +396,9 @@ async function fetchTodaysMeetIds() {
 
 // --- Load a meet's lifters for autocomplete only (no changes feed) ---
 async function indexMeet(meetId) {
-  if (loadedMeets.has(meetId) || pendingMeets.has(meetId)) return;
+  if (pendingMeets.has(meetId)) return;
+  // Re-index if previously loaded with 0 lifters (roster may have been added since)
+  if (loadedMeets.has(meetId) && Object.keys(getMeetState(meetId).lifters).length > 0) return;
   pendingMeets.add(meetId);
   try {
     await loadMeet(meetId);
