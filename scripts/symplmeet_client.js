@@ -49,6 +49,24 @@ function getMeetPlatform(meetId) {
 const LIFT_PREFIX_MAP = { sq: 'squat', bp: 'bench', dl: 'dead' };
 const RESULT_MAP = { 1: 'good', 0: null, '-1': 'bad' };
 
+// --- Parse lift prefix and attempt number from various API formats ---
+function parseLiftEntry(entry) {
+  if (!entry) return null;
+  // Try round field first (e.g. "sq1", "bp2", "dl3")
+  if (entry.round) {
+    const match = entry.round.match(/^(sq|bp|dl)(\d)$/);
+    if (match) return { prefix: match[1], attemptNum: match[2], lifterId: entry.lifterId || entry.id };
+  }
+  // Fall back to liftType/attemptNumber fields
+  const liftType = (entry.liftType || entry.lift || '').toLowerCase();
+  let prefix = null;
+  if (liftType.includes('squat') || liftType === 'sq') prefix = 'sq';
+  else if (liftType.includes('bench') || liftType === 'bp') prefix = 'bp';
+  else if (liftType.includes('dead') || liftType === 'dl') prefix = 'dl';
+  if (!prefix) return null;
+  return { prefix, attemptNum: entry.attemptNumber || entry.attempt || 1, lifterId: entry.lifterId || entry.id };
+}
+
 // --- Normalize SymPlmeet data into meetState shape ---
 function normalizeSymPlmeetData(meetId, data, meetState) {
   // API may return stringified JSON for these fields
@@ -67,10 +85,14 @@ function normalizeSymPlmeetData(meetId, data, meetState) {
     name: meetName,
   };
 
-  // Clear previous state for full refresh
-  meetState.lifters = {};
-  meetState.attempts = {};
-  meetState.platforms = {};
+  // Only clear state if we have results data to replace it with
+  // (Socket.IO updates may be partial, containing only currentLift changes)
+  const hasResults = data.results && (typeof data.results === 'string' ? data.results !== '{}' && data.results !== '[]' : Object.keys(data.results).length > 0);
+  if (hasResults) {
+    meetState.lifters = {};
+    meetState.attempts = {};
+  }
+  meetState.platforms = meetState.platforms || {};
 
   // Build lifters and attempts from results
   // API returns { "A": [lifters], "B": [lifters] } keyed by flight letter,
@@ -120,7 +142,7 @@ function normalizeSymPlmeetData(meetId, data, meetState) {
     const lifterObj = {
       _id: lid,
       name: [l.firstName || l.firstname, l.lastName || l.lastname].filter(Boolean).join(' ') || l.name || 'Unknown',
-      lot: l.lotNumber || l.lot || 999,
+      lot: l.lotNumber ?? l.lot ?? 999,
       session: 1,
       flight: l.flight || 'A',
       platformId: 'sp-default',
@@ -128,11 +150,11 @@ function normalizeSymPlmeetData(meetId, data, meetState) {
 
     // Store pre-computed best lifts if available
     const bl = l.bestlifts || l.bestLifts || {};
-    if (bl.squat || bl.bench || bl.deadlift || l.bestSquat || l.bestBench || l.bestDeadlift) {
+    if (bl.squat != null || bl.bench != null || bl.deadlift != null || l.bestSquat != null || l.bestBench != null || l.bestDeadlift != null) {
       lifterObj.bestLifts = {
-        squat: bl.squat || l.bestSquat || 0,
-        bench: bl.bench || l.bestBench || 0,
-        deadlift: bl.deadlift || l.bestDeadlift || 0,
+        squat: bl.squat ?? l.bestSquat ?? 0,
+        bench: bl.bench ?? l.bestBench ?? 0,
+        deadlift: bl.deadlift ?? l.bestDeadlift ?? 0,
       };
     }
 
@@ -163,45 +185,23 @@ function normalizeSymPlmeetData(meetId, data, meetState) {
   }
 
   // Virtual platform
-  const rawCurrentLift = typeof data.currentLift === 'string' ? JSON.parse(data.currentLift) : (data.currentLift || meetInfo.currentLift || {});
+  let rawCurrentLift = typeof data.currentLift === 'string' ? JSON.parse(data.currentLift) : data.currentLift;
+  if (!rawCurrentLift) {
+    rawCurrentLift = typeof meetInfo.currentLift === 'string' ? JSON.parse(meetInfo.currentLift) : meetInfo.currentLift;
+  }
+  rawCurrentLift = rawCurrentLift || {};
   let currentAttemptId = null;
 
-  if (rawCurrentLift.lifterId) {
-    // Parse round field (e.g. "sq1", "bp2", "dl3") or use liftType/attemptNumber
-    let prefix = null;
-    let attemptNum = rawCurrentLift.attemptNumber || rawCurrentLift.attempt || 1;
-    if (rawCurrentLift.round) {
-      const roundMatch = rawCurrentLift.round.match(/^(sq|bp|dl)(\d)$/);
-      if (roundMatch) {
-        prefix = roundMatch[1];
-        attemptNum = roundMatch[2];
-      }
-    }
-    if (!prefix) {
-      const liftType = (rawCurrentLift.liftType || rawCurrentLift.lift || '').toLowerCase();
-      if (liftType.includes('squat') || liftType === 'sq') prefix = 'sq';
-      else if (liftType.includes('bench') || liftType === 'bp') prefix = 'bp';
-      else if (liftType.includes('dead') || liftType === 'dl') prefix = 'dl';
-    }
-
-    if (prefix) {
-      currentAttemptId = `sa-${prefix}${attemptNum}-${rawCurrentLift.lifterId}`;
-    }
+  const currentParsed = parseLiftEntry(rawCurrentLift);
+  if (currentParsed && currentParsed.lifterId) {
+    currentAttemptId = `sa-${currentParsed.prefix}${currentParsed.attemptNum}-${currentParsed.lifterId}`;
   }
 
   // If we have a lifting order, use the first entry as current lifter
   if (!currentAttemptId && liftingOrder.length > 0) {
-    const first = liftingOrder[0];
-    if (first.lifterId) {
-      const liftType = (first.liftType || first.lift || '').toLowerCase();
-      const attemptNum = first.attemptNumber || first.attempt || 1;
-      let prefix = null;
-      if (liftType.includes('squat') || liftType === 'sq') prefix = 'sq';
-      else if (liftType.includes('bench') || liftType === 'bp') prefix = 'bp';
-      else if (liftType.includes('dead') || liftType === 'dl') prefix = 'dl';
-      if (prefix) {
-        currentAttemptId = `sa-${prefix}${attemptNum}-${first.lifterId}`;
-      }
+    const firstParsed = parseLiftEntry(liftingOrder[0]);
+    if (firstParsed && firstParsed.lifterId) {
+      currentAttemptId = `sa-${firstParsed.prefix}${firstParsed.attemptNum}-${firstParsed.lifterId}`;
     }
   }
 
@@ -215,14 +215,9 @@ function normalizeSymPlmeetData(meetId, data, meetState) {
   // (used by computeAttemptOrder when available)
   if (liftingOrder.length > 0) {
     meetState.platforms['sp-default']._liftingOrder = liftingOrder.map(entry => {
-      const liftType = (entry.liftType || entry.lift || '').toLowerCase();
-      const attemptNum = entry.attemptNumber || entry.attempt || 1;
-      let prefix = null;
-      if (liftType.includes('squat') || liftType === 'sq') prefix = 'sq';
-      else if (liftType.includes('bench') || liftType === 'bp') prefix = 'bp';
-      else if (liftType.includes('dead') || liftType === 'dl') prefix = 'dl';
-      if (!prefix) return null;
-      return `sa-${prefix}${attemptNum}-${entry.lifterId}`;
+      const parsed = parseLiftEntry(entry);
+      if (!parsed || !parsed.lifterId) return null;
+      return `sa-${parsed.prefix}${parsed.attemptNum}-${parsed.lifterId}`;
     }).filter(Boolean);
   }
 }
