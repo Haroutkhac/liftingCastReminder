@@ -286,7 +286,7 @@ function stopAllSymPlmeet() {
 // --- Discover all open meets ---
 async function discoverTodaysSymPlmeetMeets() {
   try {
-    const data = await symplmeetFetchJSON('/api/todayMeets');
+    const data = await symplmeetFetchJSON('/api/liveMeets');
     const meets = Array.isArray(data) ? data : [];
     console.log(`[SYMPLMEET] Discovered ${meets.length} open meets`);
     return meets.map(m => ({
