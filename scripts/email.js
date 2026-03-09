@@ -34,11 +34,19 @@ function youtubeSearchUrl(meetName) {
   return `https://www.youtube.com/results?search_query=${encodeURIComponent(meetName)}&sp=EgJAAQ%3D%3D`;
 }
 
-async function sendOnDeckEmail(toEmail, lifterName, meetName, liftName, position, meetId, subLifterName, details) {
+async function sendOnDeckEmail(toEmail, lifterName, meetName, liftName, position, meetId, subLifterName, details, meetDate) {
   const dedupKey = `${toEmail}:${meetId}:${lifterName}:${liftName}:${position}`;
   if (recentlySent.has(dedupKey)) return false;
 
-  const positionLabel = 'ALMOST UP (2 lifters away)';
+  const POSITION_LABELS = {
+    'lifting': 'LIFTING NOW',
+    'on-deck': 'ON DECK (next to lift)',
+    'in-the-hole': 'ALMOST UP (2 lifters away)',
+    '5-min-out': '~5 MINUTES OUT',
+    '10-min-out': '~10 MINUTES OUT',
+    'flight-start': 'FLIGHT STARTING',
+  };
+  const positionLabel = POSITION_LABELS[position] || position;
 
   const baseUrl = process.env.RAILWAY_PUBLIC_DOMAIN
     ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
@@ -81,7 +89,7 @@ async function sendOnDeckEmail(toEmail, lifterName, meetName, liftName, position
         <h2>LiftAlert Notification</h2>
         <p><strong>${lifterName}</strong> is <strong>${positionLabel}</strong>!</p>
         <table style="margin:12px 0;border-collapse:collapse;">
-          <tr><td style="padding:4px 12px 4px 0;color:#888;">Meet</td><td style="padding:4px 0;">${meetName || 'Unknown'}</td></tr>
+          <tr><td style="padding:4px 12px 4px 0;color:#888;">Meet</td><td style="padding:4px 0;">${meetName || 'Unknown'}${meetDate ? ` (${meetDate})` : ''}</td></tr>
           <tr><td style="padding:4px 12px 4px 0;color:#888;">Lift</td><td style="padding:4px 0;">${attemptLine}</td></tr>
           ${weightLine ? `<tr><td style="padding:4px 12px 4px 0;color:#888;">Weight</td><td style="padding:4px 0;">${weightLine}</td></tr>` : ''}
           ${placeLine ? `<tr><td style="padding:4px 12px 4px 0;color:#888;">Standings</td><td style="padding:4px 0;">${placeLine}</td></tr>` : ''}
@@ -108,7 +116,7 @@ function ordinal(n) {
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
-async function sendSubscriptionConfirmation(toEmail, lifterName, meetName, meetDate, meetId) {
+async function sendSubscriptionConfirmation(toEmail, lifterName, meetName, meetDate, meetId, notifyPrefs) {
   const client = getResend();
   if (!client) {
     console.log(`[EMAIL] Skipping confirmation (no RESEND_API_KEY): ${lifterName} -> ${toEmail}`);
@@ -128,7 +136,7 @@ async function sendSubscriptionConfirmation(toEmail, lifterName, meetName, meetD
       subject: `LiftAlert: Subscription confirmed for ${lifterName}`,
       html: `
         <h2>You're subscribed!</h2>
-        <p>You'll receive alerts when <strong>${lifterName}</strong> is almost up (2 lifters away).</p>
+        <p>You'll receive alerts for <strong>${lifterName}</strong>${notifyPrefs ? ` (${notifyPrefs.split(',').join(', ')})` : ' (in-the-hole)'}.</p>
         <table style="margin:16px 0;border-collapse:collapse;">
           <tr><td style="padding:4px 12px 4px 0;color:#888;">Meet</td><td style="padding:4px 0;">${meetName}</td></tr>
           ${meetDate ? `<tr><td style="padding:4px 12px 4px 0;color:#888;">Date</td><td style="padding:4px 0;">${meetDate}</td></tr>` : ''}
@@ -189,7 +197,7 @@ async function sendAutoSubscribeNotification(toEmail, lifterName, meetName, meet
   }
 }
 
-async function sendRecapEmail(toEmail, lifterName, meetName, attempts, videoId) {
+async function sendRecapEmail(toEmail, lifterName, meetName, attempts, videoId, meetDate) {
   const client = getResend();
   if (!client) {
     console.log(`[EMAIL] Skipping recap (no RESEND_API_KEY): ${lifterName} -> ${toEmail}`);
@@ -218,7 +226,7 @@ async function sendRecapEmail(toEmail, lifterName, meetName, attempts, videoId) 
       subject: `LiftAlert Recap: ${lifterName} at ${meetName}`,
       html: `
         <h2>Meet Recap: ${lifterName}</h2>
-        <p><strong>${meetName}</strong></p>
+        <p><strong>${meetName}</strong>${meetDate ? ` &mdash; ${meetDate}` : ''}</p>
         ${videoId ? `<p><a href="https://youtu.be/${videoId}" style="color:#3b82f6;font-weight:600;">Full VOD on YouTube</a></p>` : ''}
         <table style="border-collapse:collapse;margin:16px 0;width:100%;">
           <thead>

@@ -29,7 +29,7 @@ const https = require('https');
 const { initDB, getSubscriptions, getAllMeetIds, addSubscription, removeSubscription, getSubscriptionsByEmail,
         addPersistentSubscription, removePersistentSubscription, getPersistentSubscriptionsByEmail, getAllPersistentSubscriptions,
         getStats, logAttemptTimestamp, getAttemptTimestampsByMeet, getMeetVideo, getMeetVideos, setMeetVideo } = require('./db');
-const { sendOnDeckEmail, sendSubscriptionConfirmation, sendAutoSubscribeNotification } = require('./email');
+const { sendOnDeckEmail, sendSubscriptionConfirmation, sendAutoSubscribeNotification, sendRecapEmail } = require('./email');
 const { getMeetPlatform, loadSymPlmeetMeet, watchSymPlmeet, stopSymPlmeet,
         stopAllSymPlmeet, discoverTodaysSymPlmeetMeets, normalizeSymPlmeetData } = require('./symplmeet_client');
 
@@ -85,10 +85,13 @@ function parseAttemptId(attemptId) {
 // --- Per-meet state ---
 // meets: { [meetId]: { meet, platforms, lifters, divisions, attempts, lastSeq, trackState } }
 const meets = {};
+const recapsSent = new Set(); // meetIds that have had recap emails dispatched
 
 // --- Meets page cache (avoids recomputing attempt order on every page load) ---
-let meetsPageCache = { html: null, ts: 0 };
+// Bounded LRU-ish map: max 20 entries, keyed by email (or empty string for anonymous)
+const meetsPageCache = new Map();
 const MEETS_PAGE_CACHE_TTL = 5_000; // 5 seconds
+const MEETS_PAGE_CACHE_MAX = 20;
 
 // --- Subscription cache (avoids hitting Postgres on every attempt change) ---
 const subsCache = {};
@@ -115,6 +118,16 @@ function getMeetState(meetId) {
     };
   }
   return meets[meetId];
+}
+
+// --- IPF weight classes (kg) ---
+const WEIGHT_CLASSES = [47, 52, 57, 63, 69, 76, 83, 93, 105, 120, 140, 145];
+function getWeightClass(bw) {
+  if (!bw) return null;
+  for (const wc of WEIGHT_CLASSES) {
+    if (bw <= wc) return wc;
+  }
+  return '145+';
 }
 
 // --- Compute lifter's best completed lifts from attempt docs ---
@@ -258,16 +271,86 @@ async function notifySubscribers(meetId, lifterName, liftName, position, details
     const subs = await getCachedSubscriptions(meetId);
     if (subs.length === 0) return;
     const meetName = getMeetState(meetId).meet?.name || meetId;
+    const meetDate = getMeetState(meetId).meet?.date || '';
     const nameLower = lifterName.toLowerCase();
 
     for (const sub of subs) {
-      if (nameLower === sub.lifter_name.toLowerCase()) {
-        console.log(`[NOTIFY] Match: "${lifterName}" is ${position} — notifying ${sub.email}`);
-        await sendOnDeckEmail(sub.email, lifterName, meetName, liftName, position, meetId, sub.lifter_name, details);
-      }
+      if (nameLower !== sub.lifter_name.toLowerCase()) continue;
+      const prefs = (sub.notify_prefs || 'in-the-hole').split(',');
+      if (!prefs.includes(position)) continue;
+      console.log(`[NOTIFY] Match: "${lifterName}" is ${position} — notifying ${sub.email}`);
+      await sendOnDeckEmail(sub.email, lifterName, meetName, liftName, position, meetId, sub.lifter_name, details, meetDate);
     }
   } catch (err) {
     console.error(`[NOTIFY ERROR] ${err.message}`);
+  }
+}
+
+// --- Send recap emails when a meet ends ---
+async function sendMeetRecaps(meetId) {
+  if (recapsSent.has(meetId)) return;
+  recapsSent.add(meetId);
+
+  try {
+    const subs = await getSubscriptions(meetId);
+    if (subs.length === 0) {
+      console.log(`[RECAP] No subscribers for meet ${meetId}, skipping`);
+      return;
+    }
+
+    const timestamps = await getAttemptTimestampsByMeet(meetId);
+    if (timestamps.length === 0) {
+      console.log(`[RECAP] No timestamps for meet ${meetId}, skipping`);
+      return;
+    }
+
+    const video = await getMeetVideo(meetId);
+    const videoId = video?.youtube_video_id || null;
+    const streamStart = video ? Number(video.stream_start_epoch) : null;
+
+    const meetName = getMeetState(meetId).meet?.name || video?.meet_name || meetId;
+    const meetDate = getMeetState(meetId).meet?.date || video?.meet_date || '';
+
+    // Group timestamps by lifter_name (lowercase key)
+    const byLifter = {};
+    for (const t of timestamps) {
+      const key = t.lifter_name.toLowerCase();
+      if (!byLifter[key]) byLifter[key] = [];
+      byLifter[key].push(t);
+    }
+
+    for (const sub of subs) {
+      const lifterKey = sub.lifter_name.toLowerCase();
+      const lifterTimestamps = byLifter[lifterKey];
+      if (!lifterTimestamps || lifterTimestamps.length === 0) continue;
+
+      const attempts = lifterTimestamps.map(t => {
+        const wallEpoch = Math.floor(new Date(t.wall_clock_time).getTime() / 1000);
+        let youtubeLink = null;
+        let timeFormatted = '';
+        if (videoId && streamStart) {
+          const offset = Math.max(0, wallEpoch - streamStart - TIMESTAMP_LEAD_SECONDS);
+          const h = Math.floor(offset / 3600);
+          const m = Math.floor((offset % 3600) / 60);
+          const s = Math.floor(offset % 60);
+          timeFormatted = h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+          youtubeLink = `https://youtu.be/${videoId}?t=${offset}`;
+        }
+        return {
+          lift_name: t.lift_name,
+          attempt_number: t.attempt_number,
+          weight: t.weight,
+          timeFormatted,
+          youtubeLink,
+        };
+      });
+
+      console.log(`[RECAP] Sending recap to ${sub.email} for ${sub.lifter_name} at "${meetName}" (${attempts.length} attempts)`);
+      sendRecapEmail(sub.email, sub.lifter_name, meetName, attempts, videoId, meetDate)
+        .catch(err => console.error(`[RECAP ERROR] Email to ${sub.email}: ${err.message}`));
+    }
+  } catch (err) {
+    console.error(`[RECAP ERROR] Failed to send recaps for meet ${meetId}: ${err.message}`);
   }
 }
 
@@ -297,29 +380,39 @@ function checkPlatforms(meetId) {
     };
 
     if (!st.trackState[platformId]) {
-      st.trackState[platformId] = { lastCurrentAttemptId: null, notifiedOnDeck: new Set(), notifiedInTheHole: new Set(), notifiedLifting: new Set() };
+      st.trackState[platformId] = {
+        lastCurrentAttemptId: null,
+        notifiedOnDeck: new Set(), notifiedInTheHole: new Set(), notifiedLifting: new Set(),
+        notified5MinOut: new Set(), notified10MinOut: new Set(),
+        notifiedFlightStarts: new Set(),
+        lastFlightLift: null,
+      };
     }
     const ts = st.trackState[platformId];
 
-    // Reset notifications when current attempt changes
+    // Reset per-attempt dedup sets when current attempt changes
+    // (flight-start tracking persists for the entire meet)
     if (platform.currentAttemptId !== ts.lastCurrentAttemptId) {
       ts.lastCurrentAttemptId = platform.currentAttemptId;
       ts.notifiedOnDeck = new Set();
       ts.notifiedInTheHole = new Set();
       ts.notifiedLifting = new Set();
+      ts.notified5MinOut = new Set();
+      ts.notified10MinOut = new Set();
 
       console.log(`\n[CURRENT] ${currentName} - ${parsed.liftName} attempt ${parsed.attemptNumber} (${platform.name || platformId}) [${meetId}]`);
 
       // Log timestamp for meet recap feature
       const currentAttemptDoc = st.attempts[platform.currentAttemptId];
+      const currentLifterDoc = st.lifters[parsed.lifterId];
       logAttemptTimestamp(
         meetId, platformId, platform.currentAttemptId,
         parsed.lifterId, currentName, parsed.liftName, parsed.attemptNumber,
-        currentAttemptDoc?.weight
+        currentAttemptDoc?.weight, currentLifterDoc?.bodyWeight
       ).catch(err => console.error(`[TIMESTAMP ERROR] ${err.message}`));
 
       // Auto-discover YouTube VOD for this meet (fire-and-forget, runs once per meet)
-      autoLinkYouTubeVideo(meetId, st.meet?.name || meetId).catch(err => console.error(`[YT ERROR] ${err.message}`));
+      autoLinkYouTubeVideo(meetId, st.meet?.name || meetId, st.meet?.date || '').catch(err => console.error(`[YT ERROR] ${err.message}`));
 
       if (nextAttempts.length > 0) {
         const upcoming = nextAttempts.slice(0, 5).map((a, i) => {
@@ -328,6 +421,20 @@ function checkPlatforms(meetId) {
         });
         console.log(upcoming.join('\n'));
       }
+
+      // --- Flight start detection ---
+      // Fires once per flight+lift combo (e.g. "A:squat") when the first
+      // attempt of that combo becomes current on the platform.
+      const flightLiftKey = `${currentLifter?.flight}:${parsed.liftName}`;
+      if (!ts.notifiedFlightStarts.has(flightLiftKey) && ts.lastFlightLift !== flightLiftKey) {
+        ts.notifiedFlightStarts.add(flightLiftKey);
+        const flightLifters = Object.values(st.lifters)
+          .filter(l => l.platformId === platformId && l.flight === currentLifter?.flight);
+        for (const lifter of flightLifters) {
+          notifySubscribers(meetId, lifter.name, parsed.liftName, 'flight-start', { flight: currentLifter?.flight });
+        }
+      }
+      ts.lastFlightLift = flightLiftKey;
     }
 
     // Console tracking (CLI --track)
@@ -346,12 +453,66 @@ function checkPlatforms(meetId) {
       }
     }
 
-    // Email notification: only when lifter is in the hole (2 away) — gives enough lead time
+    // --- Email notifications at various positions ---
+
+    // "lifting" — current lifter
+    if (currentLifter?.name && !ts.notifiedLifting.has(currentName)) {
+      ts.notifiedLifting.add(currentName);
+      const currentAttemptDoc = st.attempts[platform.currentAttemptId];
+      const placeInfo = getPlaceInfo(st, platformId, parsed.lifterId, currentAttemptDoc?.weight, parsed.liftName);
+      notifySubscribers(meetId, currentName, parsed.liftName, 'lifting', {
+        weight: currentAttemptDoc?.weight,
+        attemptNumber: parsed.attemptNumber,
+        liftName: parsed.liftName,
+        ...placeInfo,
+      });
+    }
+
+    // "on-deck" — next lifter
+    if (nextAttempts.length > 0 && nextAttempts[0].lifterName && !ts.notifiedOnDeck.has(nextAttempts[0].lifterName)) {
+      ts.notifiedOnDeck.add(nextAttempts[0].lifterName);
+      const a = nextAttempts[0];
+      const placeInfo = getPlaceInfo(st, platformId, a.lifterId, a.weight, a.liftName);
+      notifySubscribers(meetId, a.lifterName, a.liftName, 'on-deck', {
+        weight: a.weight,
+        attemptNumber: a.attemptNumber,
+        liftName: a.liftName,
+        ...placeInfo,
+      });
+    }
+
+    // "in-the-hole" — 2 lifters away
     if (nextAttempts.length > 1 && nextAttempts[1].lifterName && !ts.notifiedInTheHole.has(nextAttempts[1].lifterName)) {
       ts.notifiedInTheHole.add(nextAttempts[1].lifterName);
       const a = nextAttempts[1];
       const placeInfo = getPlaceInfo(st, platformId, a.lifterId, a.weight, a.liftName);
       notifySubscribers(meetId, a.lifterName, a.liftName, 'in-the-hole', {
+        weight: a.weight,
+        attemptNumber: a.attemptNumber,
+        liftName: a.liftName,
+        ...placeInfo,
+      });
+    }
+
+    // "5-min-out" — ~5 attempts away
+    if (nextAttempts.length > 4 && nextAttempts[4].lifterName && !ts.notified5MinOut.has(nextAttempts[4].lifterName)) {
+      ts.notified5MinOut.add(nextAttempts[4].lifterName);
+      const a = nextAttempts[4];
+      const placeInfo = getPlaceInfo(st, platformId, a.lifterId, a.weight, a.liftName);
+      notifySubscribers(meetId, a.lifterName, a.liftName, '5-min-out', {
+        weight: a.weight,
+        attemptNumber: a.attemptNumber,
+        liftName: a.liftName,
+        ...placeInfo,
+      });
+    }
+
+    // "10-min-out" — ~10 attempts away
+    if (nextAttempts.length > 9 && nextAttempts[9].lifterName && !ts.notified10MinOut.has(nextAttempts[9].lifterName)) {
+      ts.notified10MinOut.add(nextAttempts[9].lifterName);
+      const a = nextAttempts[9];
+      const placeInfo = getPlaceInfo(st, platformId, a.lifterId, a.weight, a.liftName);
+      notifySubscribers(meetId, a.lifterName, a.liftName, '10-min-out', {
         weight: a.weight,
         attemptNumber: a.attemptNumber,
         liftName: a.liftName,
@@ -533,7 +694,7 @@ async function autoSubscribeForMeet(meetId) {
       if (idx === -1) continue;
       const actualName = lifterNames[idx];
       try {
-        await addSubscription(ps.email, actualName, meetId);
+        await addSubscription(ps.email, actualName, meetId, ps.notify_prefs);
         created++;
         const meetName = st.meet?.name || meetId;
         const meetDate = st.meet?.date || '';
@@ -717,9 +878,16 @@ async function pollForNewMeets() {
           watchChanges(mid);
         }
       }
+      // Send recap emails for stale meets that have subscribers
+      const subMeetIds = new Set(meetIds);
+      for (const mid of [...watchingMeets]) {
+        if (isMeetStale(mid) && subMeetIds.has(mid)) {
+          sendMeetRecaps(mid).catch(err => console.error(`[RECAP ERROR] ${err.message}`));
+        }
+      }
+
       // Clean up stale meets — stop changes feeds and remove from index
       // (keeps subscribed meets that still have active subs, even if stale)
-      const subMeetIds = new Set(meetIds);
       for (const mid of [...watchingMeets]) {
         if (isMeetStale(mid) && !subMeetIds.has(mid)) {
           console.log(`[CLEANUP] Stopping changes feed for stale meet ${mid} ("${getMeetState(mid).meet?.name}")`);
@@ -750,6 +918,11 @@ function parseFormBody(body) {
   return Object.fromEntries(params.entries());
 }
 
+// Timestamps are logged when an attempt becomes "current" on the platform,
+// which is typically ~15s before the lifter actually approaches the bar.
+// Subtract this offset so YouTube links land closer to the actual lift.
+const TIMESTAMP_LEAD_SECONDS = 15;
+
 // --- YouTube auto-discovery ---
 const videoSearched = new Set(); // track which meets we've already searched for
 
@@ -773,6 +946,9 @@ async function searchYouTube(query) {
     // sp=EgJAAQ%3D%3D filters for "Live" streams
     const html = await ytFetch(`https://www.youtube.com/results?search_query=${encoded}&sp=EgJAAQ%3D%3D`);
     const match = html.match(/"videoId":"([^"]{11})"/);
+    if (!match) {
+      console.log(`[YT] No videoId regex match in ${html.length} bytes of HTML — YouTube page structure may have changed`);
+    }
     return match ? match[1] : null;
   } catch (err) {
     console.error(`[YT SEARCH ERROR] ${err.message}`);
@@ -787,6 +963,7 @@ async function getYouTubeStreamStart(videoId) {
     if (match) {
       return Math.floor(new Date(match[1]).getTime() / 1000);
     }
+    console.log(`[YT] No startTimestamp regex match in ${html.length} bytes of HTML for video ${videoId} — YouTube page structure may have changed`);
     return null;
   } catch (err) {
     console.error(`[YT META ERROR] ${err.message}`);
@@ -794,7 +971,7 @@ async function getYouTubeStreamStart(videoId) {
   }
 }
 
-async function autoLinkYouTubeVideo(meetId, meetName) {
+async function autoLinkYouTubeVideo(meetId, meetName, meetDate) {
   if (videoSearched.has(meetId)) return;
   videoSearched.add(meetId);
 
@@ -805,7 +982,9 @@ async function autoLinkYouTubeVideo(meetId, meetName) {
       console.log(`[YT] Meet ${meetId} already linked to ${existing.youtube_video_id}`);
       return;
     }
-  } catch (_) {}
+  } catch (err) {
+    console.error(`[YT] Error checking existing video for ${meetId}: ${err.message}`);
+  }
 
   console.log(`[YT] Searching YouTube for "${meetName}"...`);
   const videoId = await searchYouTube(meetName);
@@ -822,7 +1001,7 @@ async function autoLinkYouTubeVideo(meetId, meetName) {
   }
 
   try {
-    await setMeetVideo(meetId, videoId, `https://youtu.be/${videoId}`, streamStart, meetName);
+    await setMeetVideo(meetId, videoId, `https://youtu.be/${videoId}`, streamStart, meetName, meetDate);
     console.log(`[YT] Auto-linked meet ${meetId} -> https://youtu.be/${videoId} (start: ${new Date(streamStart * 1000).toISOString()})`);
   } catch (err) {
     console.error(`[YT DB ERROR] ${err.message}`);
@@ -865,6 +1044,9 @@ const SHARED_STYLES = `
   .remove-wrap .confirm-btns { display: none; }
   .remove-wrap.confirming .remove-btn { display: none; }
   .remove-wrap.confirming .confirm-btns { display: inline !important; }
+  .pref-options { display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem 0.75rem; margin-top: 0.25rem; }
+  .pref-options label.pref { display: flex; align-items: center; gap: 0.4rem; font-size: 0.82rem; color: #CCC; text-transform: none; letter-spacing: 0; font-weight: 400; margin: 0; cursor: pointer; }
+  .pref-options input[type="checkbox"] { width: 15px; height: 15px; accent-color: #DC2626; cursor: pointer; flex-shrink: 0; }
 `;
 
 // --- HTML subscription form ---
@@ -877,7 +1059,7 @@ const FORM_HTML = `<!DOCTYPE html>
   ${FONT_LINKS}
   <style>
     ${SHARED_STYLES}
-    body { display: flex; align-items: center; justify-content: center; padding: 1rem; }
+    body { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1.5rem 1rem; min-height: 100vh; gap: 1.25rem; }
     .help { font-size: 0.72rem; color: #555; margin-top: 0.35rem; text-transform: uppercase; letter-spacing: 0.05em; }
     .autocomplete-wrapper { position: relative; }
     .suggestions { position: absolute; top: 100%; left: 0; right: 0; background: #141414; border: 1px solid #252525; border-top: none; border-radius: 0 0 8px 8px; max-height: 240px; overflow-y: auto; z-index: 10; display: none; }
@@ -895,10 +1077,12 @@ const FORM_HTML = `<!DOCTYPE html>
     .no-results { padding: 0.55rem 0.85rem; color: #555; font-size: 0.85rem; }
     .meet-count { text-align: center; margin-top: 1.25rem; font-size: 0.8rem; color: #555; display: none; align-items: center; justify-content: center; gap: 0.4rem; }
     .meet-count .pulse-dot { width: 6px; height: 6px; border-radius: 50%; background: #22C55E; animation: pulse 2s ease-in-out infinite; display: inline-block; }
-    .footer-links { text-align: center; margin-top: 1.25rem; font-size: 0.8rem; }
-    .footer-links a { color: #777; transition: color 0.2s; }
-    .footer-links a:hover { color: #F0F0F0; }
-    .footer-links .sep { color: #333; margin: 0 0.35rem; }
+    .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; width: 92%; max-width: 440px; }
+    .feature-card { background: #141414; border: 1px solid #1F1F1F; border-radius: 12px; padding: 1rem 0.75rem; text-decoration: none; color: inherit; transition: border-color 0.2s, background 0.2s; cursor: pointer; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 0.35rem; }
+    .feature-card:hover { background: #1A1A1A; border-color: #DC2626; }
+    .feature-icon { width: 24px; height: 24px; color: #DC2626; flex-shrink: 0; }
+    .feature-title { font-family: 'Bebas Neue', sans-serif; font-size: 0.95rem; letter-spacing: 0.06em; color: #F0F0F0; line-height: 1; }
+    .feature-desc { font-size: 0.68rem; color: #555; line-height: 1.3; }
   </style>
 </head>
 <body>
@@ -921,10 +1105,36 @@ const FORM_HTML = `<!DOCTYPE html>
       <div class="selected-pills" id="selectedPills"></div>
       <div class="pill-count" id="pillCount"></div>
 
+      <label>Notify me when</label>
+      <div class="pref-options">
+        <label class="pref"><input type="checkbox" name="pref" value="in-the-hole" checked> In the Hole (2 away)</label>
+        <label class="pref"><input type="checkbox" name="pref" value="on-deck"> On Deck (next up)</label>
+        <label class="pref"><input type="checkbox" name="pref" value="lifting"> Lifting Now</label>
+        <label class="pref"><input type="checkbox" name="pref" value="5-min-out"> ~5 Minutes Out</label>
+        <label class="pref"><input type="checkbox" name="pref" value="10-min-out"> ~10 Minutes Out</label>
+        <label class="pref"><input type="checkbox" name="pref" value="flight-start"> Start of Flight</label>
+      </div>
+
       <button type="submit" class="btn-primary">SUBSCRIBE</button>
     </form>
     <div class="meet-count" id="meetCount"><span class="pulse-dot"></span> <span id="meetCountText"></span></div>
-    <div class="footer-links"><a href="/my-subscriptions">My subscriptions</a><span class="sep">&middot;</span><a href="/meets">Today&rsquo;s meets</a><span class="sep">&middot;</span><a href="/recaps">Meet recaps</a></div>
+  </div>
+  <div class="features animate-in" style="animation-delay:0.12s;">
+    <a href="/meets" class="feature-card">
+      <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49"/><path d="M7.76 16.24a6 6 0 0 1 0-8.49"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
+      <div class="feature-title">LIVE MEETS</div>
+      <div class="feature-desc">Browse &amp; track open meets</div>
+    </a>
+    <a href="/my-subscriptions" class="feature-card">
+      <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+      <div class="feature-title">MY ALERTS</div>
+      <div class="feature-desc">Manage subscriptions</div>
+    </a>
+    <a href="/recaps" class="feature-card">
+      <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m10 9 5 3-5 3z" fill="currentColor"/></svg>
+      <div class="feature-title">RECAPS</div>
+      <div class="feature-desc">Relive meet highlights</div>
+    </a>
   </div>
   <script>
     const lifterInput = document.getElementById('lifterInput');
@@ -962,10 +1172,11 @@ const FORM_HTML = `<!DOCTYPE html>
       const btn = form.querySelector('button[type="submit"]');
       btn.disabled = true;
       btn.textContent = 'SUBSCRIBING...';
+      const notifyPrefs = [...document.querySelectorAll('input[name="pref"]:checked')].map(c => c.value).join(',');
       fetch('/subscribe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, selections })
+        body: JSON.stringify({ email, selections, notifyPrefs })
       }).then(r => r.text()).then(html => {
         document.open(); document.write(html); document.close();
       }).catch(() => {
@@ -1060,7 +1271,7 @@ const FORM_HTML = `<!DOCTYPE html>
         const already = selections.some(s => s.name === r.name && s.meetId === r.meetId);
         return '<div class="suggestion-item' + (already ? ' already' : '') + '" data-idx="' + i + '">' +
           '<div class="name">' + escHtml(r.name) + (already ? ' <span style="color:#555;font-size:0.75rem;">(added)</span>' : '') + '</div>' +
-          '<div class="meet-name">' + escHtml(r.meetName) + '</div>' +
+          '<div class="meet-name">' + escHtml(r.meetName) + (r.meetDate ? ' (' + escHtml(r.meetDate) + ')' : '') + '</div>' +
         '</div>';
       }).join('');
       suggestionsEl.style.display = 'block';
@@ -1151,8 +1362,9 @@ ${FONT_LINKS}
 </div></body></html>`;
 }
 
-function bulkSuccessHTML(email, items, allSubs) {
+function bulkSuccessHTML(email, items, allSubs, notifyPrefs) {
   const namesList = items.map(i => `<strong>${escHtml(i.name)}</strong>`).join(', ');
+  const prefsList = (notifyPrefs || 'in-the-hole').split(',').join(', ');
   const subsRows = allSubs.map(s => {
     const mName = meets[s.meet_id]?.meet?.name || s.meet_id;
     const meetDate = meets[s.meet_id]?.meet?.date || '';
@@ -1184,7 +1396,7 @@ ${FONT_LINKS}
 </head><body><div class="card animate-in">
   <div style="text-align:center;margin-bottom:1.25rem;"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></div>
   <div class="success-heading">SUBSCRIBED!</div>
-  <p class="confirm-text">You'll get alerts when ${namesList} ${items.length === 1 ? 'is' : 'are'} almost up (2 lifters away).<br><span style="font-size:0.85rem;color:#777;">You'll also be auto-subscribed when they compete in future meets.</span></p>
+  <p class="confirm-text">You'll get alerts for ${namesList}: <span style="font-size:0.85rem;color:#999;">${escHtml(prefsList)}</span>.<br><span style="font-size:0.85rem;color:#777;">You'll also be auto-subscribed when they compete in future meets.</span></p>
   <div class="spam-warning">Check your spam/junk folder and mark our emails as &ldquo;Not Spam&rdquo; to make sure you get alerts on time.</div>
   <div class="subs-heading">YOUR SUBSCRIPTIONS</div>
   <table><thead><tr><th>Lifter</th><th>Meet</th><th></th></tr></thead><tbody>${subsRows}</tbody></table>
@@ -1211,47 +1423,57 @@ ${FONT_LINKS}
 </div></body></html>`;
 }
 
-function meetsHTML(meetList) {
-  const meetCards = meetList.length === 0
+function meetsHTML(meetList, subscribedMeetIds) {
+  const subSet = new Set(subscribedMeetIds || []);
+
+  // Partition into subscribed vs rest
+  const subscribed = meetList.filter(m => subSet.has(m.id));
+  const rest = meetList.filter(m => !subSet.has(m.id));
+
+  function renderCard(m) {
+    const isLive = m.watching;
+    const isSub = subSet.has(m.id);
+    const borderColor = isLive ? '#22C55E' : isSub ? '#DC2626' : '#1F1F1F';
+    const accentColor = isLive ? '#22C55E' : '#DC2626';
+    const badge = isLive
+      ? '<span class="badge badge-live"><span class="pulse-dot"></span>Live</span>'
+      : '';
+    const subBadge = isSub
+      ? '<span class="badge badge-sub">Subscribed</span>'
+      : '';
+    const dateStr = m.date ? escHtml(m.date) : '';
+    const locationStr = m.location ? escHtml(m.location) : '';
+    const meta = [dateStr, locationStr, `${m.lifterCount} lifters`].filter(Boolean).join(' &middot; ');
+
+    // Current status line for live meets
+    let statusLine = '';
+    if (isLive && m.currentLift) {
+      statusLine = `<div class="meet-status"><span style="color:#F0F0F0;font-weight:500;">${escHtml(m.currentLift.lifter)}</span> <span style="color:#666;">&mdash; ${escHtml(m.currentLift.liftName || '')} attempt ${escHtml(String(m.currentLift.attemptNumber || ''))}</span></div>`;
+    }
+
+    return `<a href="/meets/${escHtml(m.id)}" class="meet-card" style="border-color:${borderColor};">
+      <div style="position:absolute;top:0;left:0;bottom:0;width:3px;background:${accentColor};"></div>
+      <div class="meet-card-header">
+        <h2 class="meet-card-title">${escHtml(m.name)}</h2>
+        <div class="meet-card-badges">${badge}${subBadge}</div>
+      </div>
+      <p class="meet-card-meta">${meta}</p>
+      ${statusLine}
+    </a>`;
+  }
+
+  const subscribedSection = subscribed.length > 0
+    ? `<div class="section-label">YOUR MEETS</div>${subscribed.map(renderCard).join('')}`
+    : '';
+  const restSection = rest.length > 0
+    ? `${subscribed.length > 0 ? '<div class="section-label" style="margin-top:1.5rem;">ALL MEETS</div>' : ''}${rest.map(renderCard).join('')}`
+    : '';
+  const empty = meetList.length === 0
     ? '<p style="color:#555;text-align:center;margin:2rem 0;">No meets currently indexed.</p>'
-    : meetList.map(m => {
-      const details = [m.date, m.location].filter(Boolean).map(s => escHtml(s)).join(' &middot; ');
-      const statusBadge = m.watching
-        ? '<span style="font-size:0.72rem;color:#22C55E;border:1px solid #166534;padding:0.15rem 0.55rem;border-radius:99px;display:inline-flex;align-items:center;gap:0.3rem;"><span style="width:5px;height:5px;border-radius:50%;background:#22C55E;animation:pulse 2s ease-in-out infinite;display:inline-block;"></span>Live</span>'
-        : '';
-      const platformRows = m.platforms.map(p => {
-        const current = p.currentLifter
-          ? `<strong style="color:#F0F0F0;">${escHtml(p.currentLifter)}</strong> <span style="color:#777;">&mdash; ${escHtml(p.liftName || '')} attempt ${escHtml(String(p.attemptNumber || ''))}</span>`
-          : '<span style="color:#555;">No current lifter</span>';
-        const next = p.nextUp.length > 0
-          ? p.nextUp.map((n, i) => `<span style="color:#777;font-size:0.8rem;">${i === 0 ? 'On deck' : 'In hole'}: <span style="color:#999;">${escHtml(n.name)}</span></span>`).join('<br>')
-          : '';
-        return `<div style="margin-top:0.5rem;padding:0.55rem 0.85rem;background:#0A0A0A;border:1px solid #1F1F1F;border-radius:8px;">
-          <div style="font-size:0.72rem;color:#666;margin-bottom:0.25rem;text-transform:uppercase;letter-spacing:0.05em;">${escHtml(p.name)}</div>
-          <div style="font-size:0.9rem;">${current}</div>
-          ${next ? `<div style="margin-top:0.3rem;">${next}</div>` : ''}
-        </div>`;
-      }).join('');
-      return `<div style="background:#141414;border:1px solid #1F1F1F;border-radius:12px;padding:1.25rem;margin-bottom:1rem;position:relative;overflow:hidden;">
-        <div style="position:absolute;top:0;left:0;bottom:0;width:3px;background:#DC2626;"></div>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.25rem;">
-          <h2 style="font-size:1.15rem;margin:0;">${escHtml(m.name)}</h2>
-          ${statusBadge}
-        </div>
-        ${details ? `<p style="font-size:0.85rem;color:#555;margin-bottom:0.5rem;">${details}</p>` : ''}
-        <p style="font-size:0.85rem;color:#777;">${m.lifterCount} lifters &middot; ${m.platformCount} platform${m.platformCount !== 1 ? 's' : ''}</p>
-        ${platformRows}
-        ${m.lifters.length > 0 ? `<details style="margin-top:0.6rem;">
-          <summary style="cursor:pointer;font-size:0.8rem;color:#777;user-select:none;">View all lifters</summary>
-          <div style="margin-top:0.4rem;padding:0.5rem 0.75rem;background:#0A0A0A;border:1px solid #1F1F1F;border-radius:8px;max-height:200px;overflow-y:auto;font-size:0.8rem;color:#999;line-height:1.6;">
-            ${m.lifters.map(n => escHtml(n)).join('<br>')}
-          </div>
-        </details>` : ''}
-      </div>`;
-    }).join('');
+    : '';
 
   return `<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Today's Meets - LiftAlert</title>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>All Meets - LiftAlert</title>
 ${FONT_LINKS}
 <style>
   ${SHARED_STYLES}
@@ -1261,88 +1483,389 @@ ${FONT_LINKS}
   .nav a { color: #777; }
   .nav a:hover { color: #F0F0F0; }
   .page-heading { font-family: 'Bebas Neue', sans-serif; font-size: 1.75rem; letter-spacing: 0.06em; margin-bottom: 0.25rem; }
+  .section-label { font-size: 0.7rem; color: #666; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 600; margin-bottom: 0.6rem; }
+  .meet-card {
+    display: block; text-decoration: none; color: inherit;
+    background: #141414; border: 1px solid #1F1F1F; border-radius: 12px;
+    padding: 1rem 1.25rem; margin-bottom: 0.75rem; position: relative; overflow: hidden;
+    transition: border-color 0.2s, background 0.2s; cursor: pointer;
+  }
+  .meet-card:hover { background: #1A1A1A; border-color: #333; }
+  .meet-card-header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.2rem; }
+  .meet-card-title { font-size: 1.05rem; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meet-card-badges { display: flex; gap: 0.4rem; flex-shrink: 0; }
+  .badge { font-size: 0.68rem; padding: 0.12rem 0.5rem; border-radius: 99px; display: inline-flex; align-items: center; gap: 0.25rem; white-space: nowrap; }
+  .badge-live { color: #22C55E; border: 1px solid #166534; }
+  .badge-sub { color: #DC2626; border: 1px solid #7F1D1D; }
+  .badge .pulse-dot { width: 5px; height: 5px; border-radius: 50%; background: #22C55E; animation: pulse 2s ease-in-out infinite; display: inline-block; }
+  .meet-card-meta { font-size: 0.82rem; color: #666; margin: 0; }
+  .meet-status { font-size: 0.82rem; margin-top: 0.4rem; }
 </style>
 </head><body><div class="container animate-in">
   <div class="nav"><a href="/">&larr; Back to <span class="brand" style="font-size:1rem;"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
-  <div class="page-heading">TODAY'S MEETS</div>
-  <p class="subtitle" style="margin-bottom:1.5rem;">${meetList.length} meet${meetList.length !== 1 ? 's' : ''} currently indexed</p>
-  ${meetCards}
+  <div class="page-heading">ALL MEETS</div>
+  <p class="subtitle" style="margin-bottom:1.25rem;">${meetList.length} meet${meetList.length !== 1 ? 's' : ''} currently indexed</p>
+  ${subscribedSection}${restSection}${empty}
 </div></body></html>`;
 }
 
-function recapHTML(meetId, meetName, videoId, streamStart, timestamps) {
-  // Group by lifter
-  const byLifter = {};
-  for (const t of timestamps) {
-    if (!byLifter[t.lifter_id]) byLifter[t.lifter_id] = { name: t.lifter_name, attempts: [] };
-    byLifter[t.lifter_id].attempts.push(t);
-  }
+// --- Meet detail page (scoresheet table like recaps) ---
+function meetDetailHTML(meetId, meetState, subscribedLifterNames) {
+  const subNameSet = new Set((subscribedLifterNames || []).map(n => n.toLowerCase()));
+  const meetDoc = meetState.meet || {};
+  const meetName = meetDoc.name || meetId;
+  const dateStr = meetDoc.date || '';
+  const locationStr = meetDoc.location || meetDoc.city || '';
+  const meta = [dateStr, locationStr].filter(Boolean).join(' &middot; ');
 
-  // Sort lifters alphabetically
-  const lifters = Object.values(byLifter).sort((a, b) => a.name.localeCompare(b.name));
+  // Build lifter rows with best lifts
+  const lifters = Object.values(meetState.lifters).filter(l => l.name).map(l => {
+    const bests = computeLifterBests(meetState, l._id);
+    const total = bests.squat + bests.bench + bests.dead;
+    return {
+      id: l._id,
+      name: l.name,
+      bodyWeight: l.bodyWeight || null,
+      weightClass: getWeightClass(l.bodyWeight),
+      flight: l.flight || '',
+      session: l.session || 1,
+      team: l.team || '',
+      bestSq: bests.squat || null,
+      bestBp: bests.bench || null,
+      bestDl: bests.dead || null,
+      total: total || null,
+      isSubscribed: subNameSet.has((l.name || '').toLowerCase()),
+    };
+  });
 
-  const lifterCards = lifters.map(l => {
-    const rows = l.attempts.map(a => {
-      const wallEpoch = Math.floor(new Date(a.wall_clock_time).getTime() / 1000);
-      const offset = Math.max(0, wallEpoch - streamStart);
-      const h = Math.floor(offset / 3600);
-      const m = Math.floor((offset % 3600) / 60);
-      const s = Math.floor(offset % 60);
-      const timeStr = h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
-      const w = a.weight ? `${a.weight} kg` : '';
-      const liftLabel = a.lift_name.charAt(0).toUpperCase() + a.lift_name.slice(1);
-      const ytLink = `https://youtu.be/${videoId}?t=${offset}`;
-      const goodBad = a.result === 'good' ? ' style="color:#4ADE80;"' : a.result === 'bad' ? ' style="color:#FCA5A5;"' : '';
-      return `<tr>
-        <td${goodBad}>${escHtml(liftLabel)}</td>
-        <td${goodBad}>${escHtml(String(a.attempt_number))}</td>
-        <td${goodBad}>${escHtml(w)}</td>
-        <td><a href="${escHtml(ytLink)}" target="_blank" style="color:#3b82f6;">${timeStr} &#x25B6;</a></td>
-      </tr>`;
-    }).join('');
-    return `<div style="background:#141414;border:1px solid #1F1F1F;border-radius:12px;padding:1.25rem;margin-bottom:1rem;position:relative;overflow:hidden;">
-      <div style="position:absolute;top:0;left:0;bottom:0;width:3px;background:#DC2626;"></div>
-      <h2 style="font-size:1.1rem;margin-bottom:0.75rem;">${escHtml(l.name)}</h2>
-      <table>
-        <thead><tr><th>Lift</th><th>Att</th><th>Weight</th><th>Video</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
+  // Sort by weight class asc, then body weight asc, then name
+  lifters.sort((a, b) => {
+    const wcA = typeof a.weightClass === 'number' ? a.weightClass : 9999;
+    const wcB = typeof b.weightClass === 'number' ? b.weightClass : 9999;
+    if (wcA !== wcB) return wcA - wcB;
+    const bwA = a.bodyWeight || 9999;
+    const bwB = b.bodyWeight || 9999;
+    if (bwA !== bwB) return bwA - bwB;
+    return a.name.localeCompare(b.name);
+  });
+
+  // Platform status summary
+  const platformStatuses = Object.entries(meetState.platforms).map(([pid, platform]) => {
+    const parsed = parseAttemptId(platform.currentAttemptId);
+    const currentLifter = parsed ? meetState.lifters[parsed.lifterId] : null;
+    const order = computeAttemptOrder(meetState, pid);
+    const currentIdx = platform.currentAttemptId ? order.findIndex(a => a.attemptId === platform.currentAttemptId) : -1;
+    const nextUp = currentIdx >= 0 ? order.slice(currentIdx + 1, currentIdx + 3) : [];
+    return {
+      name: platform.name || pid,
+      currentLifter: currentLifter?.name || null,
+      liftName: parsed?.liftName || null,
+      attemptNumber: parsed?.attemptNumber || null,
+      nextUp: nextUp.map(a => ({ name: a.lifterName, lift: a.liftName, attempt: a.attemptNumber })),
+    };
+  });
+
+  const platformHTML = platformStatuses.map(p => {
+    if (!p.currentLifter) return '';
+    const liftLabel = { squat: 'SQ', bench: 'BP', dead: 'DL', deadlift: 'DL' }[p.liftName] || p.liftName || '';
+    const nextLabels = p.nextUp.map((n, i) => {
+      const label = i === 0 ? 'On deck' : 'In hole';
+      const nLift = { squat: 'SQ', bench: 'BP', dead: 'DL', deadlift: 'DL' }[n.lift] || '';
+      return `<span style="color:#777;">${label}: <span style="color:#999;">${escHtml(n.name)}</span> <span style="color:#555;">${nLift}${n.attempt}</span></span>`;
+    }).join('<br>');
+    return `<div class="platform-status">
+      <div style="font-size:0.68rem;color:#666;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.2rem;">${escHtml(p.name)}</div>
+      <div><strong style="color:#F0F0F0;">${escHtml(p.currentLifter)}</strong> <span style="color:#666;">&mdash; ${liftLabel} attempt ${p.attemptNumber || ''}</span></div>
+      ${nextLabels ? `<div style="margin-top:0.25rem;font-size:0.82rem;">${nextLabels}</div>` : ''}
     </div>`;
+  }).filter(Boolean).join('');
+
+  // Detect which lift columns have data
+  const hasSq = lifters.some(l => l.bestSq);
+  const hasBp = lifters.some(l => l.bestBp);
+  const hasDl = lifters.some(l => l.bestDl);
+  const hasTotal = lifters.some(l => l.total);
+
+  const colDefs = [
+    ...(hasSq ? [{ key: 'bestSq', label: 'SQ', group: 'SQUAT' }] : []),
+    ...(hasBp ? [{ key: 'bestBp', label: 'BP', group: 'BENCH' }] : []),
+    ...(hasDl ? [{ key: 'bestDl', label: 'DL', group: 'DEADLIFT' }] : []),
+    ...(hasTotal ? [{ key: 'total', label: 'TOT', group: null }] : []),
+  ];
+
+  const headerRow = colDefs.map(c =>
+    `<th style="text-align:center;min-width:52px;padding:0.35rem 0.3rem;font-size:0.65rem;">${c.label}</th>`
+  ).join('');
+
+  // Build body rows with weight class separators
+  const totalCols = colDefs.length + 1; // +1 for lifter name col
+  let lastWc = null;
+  const bodyRows = lifters.map(l => {
+    let separator = '';
+    if (l.weightClass !== lastWc) {
+      lastWc = l.weightClass;
+      const wcLabel = l.weightClass ? (typeof l.weightClass === 'number' ? `${l.weightClass} kg` : l.weightClass) : 'Unknown';
+      separator = `<tr class="wc-separator"><td colspan="${totalCols}" style="padding:0.6rem 0.75rem 0.3rem;font-size:0.7rem;color:#DC2626;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;border-bottom:2px solid #252525;background:#0F0F0F;">${wcLabel}</td></tr>`;
+    }
+    const bwLabel = l.bodyWeight ? `<span style="color:#555;font-size:0.72rem;font-weight:300;"> ${l.bodyWeight}</span>` : '';
+    const subHighlight = l.isSubscribed ? ' style="color:#DC2626;"' : '';
+    const cells = colDefs.map(c => {
+      const val = l[c.key];
+      if (!val) return '<td class="cell empty">&mdash;</td>';
+      const isTotalCol = c.key === 'total';
+      const style = isTotalCol ? ' style="font-weight:600;color:#F0F0F0;"' : '';
+      return `<td class="cell"${style}>${val}</td>`;
+    }).join('');
+    return `${separator}<tr class="lifter-row" data-name="${escHtml(l.name.toLowerCase())}" data-wc="${l.weightClass || ''}">
+      <td class="lifter-name"><span${subHighlight}>${escHtml(l.name)}</span>${bwLabel}</td>
+      ${cells}
+    </tr>`;
   }).join('');
 
-  const videoLink = videoId ? `<p style="margin-bottom:1.5rem;"><a href="https://youtu.be/${escHtml(videoId)}" target="_blank" style="color:#3b82f6;font-weight:600;">Full VOD on YouTube &#x25B6;</a></p>` : '';
+  const liftingStarted = hasSq || hasBp || hasDl;
+
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${escHtml(meetName)} - LiftAlert</title>
+${FONT_LINKS}
+<style>
+  ${SHARED_STYLES}
+  body { padding: 1.5rem 0.75rem; }
+  .container { max-width: 700px; margin: 0 auto; }
+  .nav { margin-bottom: 1.5rem; font-size: 0.85rem; }
+  .nav a { color: #777; }
+  .nav a:hover { color: #F0F0F0; }
+  .page-heading { font-family: 'Bebas Neue', sans-serif; font-size: 1.75rem; letter-spacing: 0.06em; margin-bottom: 0.25rem; }
+  .platform-status { padding: 0.65rem 0.85rem; background: #0D0D0D; border: 1px solid #1F1F1F; border-radius: 8px; margin-bottom: 0.5rem; }
+  .filter-input { width: 100%; max-width: 300px; padding: 0.5rem 0.75rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.85rem; font-family: 'Outfit', sans-serif; margin-bottom: 1rem; }
+  .filter-input:focus { outline: none; border-color: #DC2626; box-shadow: 0 0 0 3px rgba(220,38,38,0.1); }
+  .scoresheet { width: 100%; border-collapse: collapse; }
+  .scoresheet th { position: sticky; top: 0; background: #0A0A0A; z-index: 2; }
+  .scoresheet .lifter-name {
+    position: sticky; left: 0; background: #0A0A0A; z-index: 1;
+    padding: 0.5rem 0.75rem; white-space: nowrap; font-weight: 500; font-size: 0.85rem;
+    border-bottom: 1px solid #1A1A1A; border-right: 2px solid #252525;
+    max-width: 180px; overflow: hidden; text-overflow: ellipsis;
+  }
+  .scoresheet .cell { text-align: center; padding: 0.45rem 0.3rem; border-bottom: 1px solid #1A1A1A; font-size: 0.85rem; color: #BBB; }
+  .scoresheet .cell.empty { color: #333; }
+  .scoresheet .lifter-row:hover td { background: #141414; }
+  .scoresheet .lifter-row:hover .lifter-name { background: #141414; }
+  .table-wrap { overflow-x: auto; border: 1px solid #1F1F1F; border-radius: 12px; background: #0A0A0A; }
+  .empty-state { text-align: center; padding: 3rem 1rem; color: #555; }
+  .empty-state p { margin-bottom: 0.5rem; }
+  .subscribe-link { display: inline-block; margin-top: 1rem; padding: 0.6rem 1.5rem; background: #DC2626; color: white; border-radius: 8px; font-family: 'Bebas Neue', sans-serif; font-size: 1rem; letter-spacing: 0.1em; transition: background 0.2s; }
+  .subscribe-link:hover { background: #B91C1C; color: white; }
+  @media (max-width: 600px) {
+    .scoresheet .lifter-name { font-size: 0.75rem; padding: 0.4rem 0.5rem; max-width: 120px; }
+    .scoresheet .cell { padding: 0.35rem 0.15rem; font-size: 0.75rem; }
+  }
+</style>
+</head><body><div class="container animate-in">
+  <div class="nav"><a href="/meets">&larr; All meets</a></div>
+  <div class="page-heading">${escHtml(meetName)}</div>
+  ${meta ? `<p class="subtitle" style="margin-bottom:0.5rem;">${meta}</p>` : ''}
+  <p style="font-size:0.85rem;color:#555;margin-bottom:1rem;">${lifters.length} lifter${lifters.length !== 1 ? 's' : ''} &middot; ${Object.keys(meetState.platforms).length} platform${Object.keys(meetState.platforms).length !== 1 ? 's' : ''}</p>
+  ${platformHTML ? `<div style="margin-bottom:1rem;">${platformHTML}</div>` : ''}
+  ${!liftingStarted ? '<p style="font-size:0.82rem;color:#555;margin-bottom:1rem;">Lifting hasn\'t started yet &mdash; results will appear as attempts are recorded.</p>' : ''}
+  <input type="text" class="filter-input" placeholder="Search lifters..." oninput="filterLifters(this.value)">
+  <div class="table-wrap">
+    <table class="scoresheet">
+      <thead>
+        <tr><th style="text-align:left;padding:0.35rem 0.75rem;font-size:0.65rem;border-bottom:2px solid #252525;${colDefs.length ? 'border-right:2px solid #252525;' : ''}">LIFTER</th>${headerRow}</tr>
+      </thead>
+      <tbody>${bodyRows}</tbody>
+    </table>
+  </div>
+  <div style="text-align:center;margin-top:1.5rem;">
+    <a href="/" class="subscribe-link">SUBSCRIBE TO A LIFTER</a>
+  </div>
+</div>
+<script>
+function filterLifters(q) {
+  const rows = document.querySelectorAll('.lifter-row');
+  const seps = document.querySelectorAll('.wc-separator');
+  const lower = q.toLowerCase();
+  const visibleWcs = new Set();
+  rows.forEach(r => {
+    const show = r.dataset.name.includes(lower);
+    r.style.display = show ? '' : 'none';
+    if (show && r.dataset.wc) visibleWcs.add(r.dataset.wc);
+  });
+  seps.forEach(s => {
+    const wcText = s.textContent.trim().replace(' kg','');
+    s.style.display = (!lower || visibleWcs.has(wcText)) ? '' : 'none';
+  });
+}
+</script>
+</body></html>`;
+}
+
+function recapHTML(meetId, meetName, videoId, streamStart, timestamps, meetDate) {
+  const COLS = ['sq1','sq2','sq3','bp1','bp2','bp3','dl1','dl2','dl3'];
+  const LIFT_KEY = { squat: 'sq', bench: 'bp', dead: 'dl', deadlift: 'dl' };
+
+  function attemptKey(a) {
+    const prefix = LIFT_KEY[a.lift_name] || a.lift_name.slice(0, 2);
+    return prefix + a.attempt_number;
+  }
+  function fmtOffset(secs) {
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = Math.floor(secs % 60);
+    return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+  }
+
+  // Group by lifter, build cell map
+  const byLifter = {};
+  for (const t of timestamps) {
+    if (!byLifter[t.lifter_id]) byLifter[t.lifter_id] = { name: t.lifter_name, cells: {}, earliest: Infinity, bodyWeight: null };
+    const wallEpoch = Math.floor(new Date(t.wall_clock_time).getTime() / 1000);
+    const offset = Math.max(0, wallEpoch - streamStart - TIMESTAMP_LEAD_SECONDS);
+    const key = attemptKey(t);
+    byLifter[t.lifter_id].cells[key] = { weight: t.weight, offset, link: `https://youtu.be/${videoId}?t=${offset}`, timeStr: fmtOffset(offset) };
+    if (wallEpoch < byLifter[t.lifter_id].earliest) byLifter[t.lifter_id].earliest = wallEpoch;
+    if (t.body_weight && !byLifter[t.lifter_id].bodyWeight) byLifter[t.lifter_id].bodyWeight = Number(t.body_weight);
+  }
+
+  // Sort by weight class (asc), then body weight (asc), then name
+  const lifters = Object.values(byLifter).sort((a, b) => {
+    const wcA = a.bodyWeight || 9999;
+    const wcB = b.bodyWeight || 9999;
+    if (wcA !== wcB) return wcA - wcB;
+    return a.name.localeCompare(b.name);
+  });
+
+  // Detect which column groups are present
+  const hasSq = lifters.some(l => COLS.slice(0, 3).some(c => l.cells[c]));
+  const hasBp = lifters.some(l => COLS.slice(3, 6).some(c => l.cells[c]));
+  const hasDl = lifters.some(l => COLS.slice(6, 9).some(c => l.cells[c]));
+  const activeCols = [
+    ...(hasSq ? ['sq1','sq2','sq3'] : []),
+    ...(hasBp ? ['bp1','bp2','bp3'] : []),
+    ...(hasDl ? ['dl1','dl2','dl3'] : []),
+  ];
+  const colLabels = { sq1:'SQ1',sq2:'SQ2',sq3:'SQ3',bp1:'BP1',bp2:'BP2',bp3:'BP3',dl1:'DL1',dl2:'DL2',dl3:'DL3' };
+
+  // Build header with lift group spans
+  const groups = [];
+  if (hasSq) groups.push({ label: 'SQUAT', cols: 3 });
+  if (hasBp) groups.push({ label: 'BENCH', cols: 3 });
+  if (hasDl) groups.push({ label: 'DEADLIFT', cols: 3 });
+  const groupRow = groups.map(g =>
+    `<th colspan="${g.cols}" style="text-align:center;padding:0.4rem 0;color:#DC2626;font-size:0.65rem;letter-spacing:0.12em;border-bottom:1px solid #252525;">${g.label}</th>`
+  ).join('');
+  const subHeaderRow = activeCols.map(c =>
+    `<th style="text-align:center;min-width:48px;padding:0.35rem 0.2rem;font-size:0.65rem;">${colLabels[c]}</th>`
+  ).join('');
+
+  // Build body rows with weight class separators
+  const totalCols = activeCols.length + 1;
+  let lastWc = null;
+  const bodyRows = lifters.map((l, i) => {
+    let separator = '';
+    const wc = getWeightClass(l.bodyWeight);
+    if (wc !== lastWc) {
+      lastWc = wc;
+      const wcLabel = wc ? `${wc} kg` : 'Unknown';
+      separator = `<tr class="wc-separator"><td colspan="${totalCols}" style="padding:0.6rem 0.75rem 0.3rem;font-size:0.7rem;color:#DC2626;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;border-bottom:2px solid #252525;background:#0F0F0F;">${wcLabel}</td></tr>`;
+    }
+    const bwLabel = l.bodyWeight ? `<span style="color:#555;font-size:0.72rem;font-weight:300;"> ${l.bodyWeight}</span>` : '';
+    const cells = activeCols.map(c => {
+      const cell = l.cells[c];
+      if (!cell) return '<td class="cell empty">&mdash;</td>';
+      const w = cell.weight ? cell.weight : '?';
+      return `<td class="cell"><a href="${escHtml(cell.link)}" target="_blank" title="${cell.timeStr}">${w}</a></td>`;
+    }).join('');
+    return `${separator}<tr class="lifter-row" data-name="${escHtml(l.name.toLowerCase())}" data-wc="${wc || ''}">
+      <td class="lifter-name">${escHtml(l.name)}${bwLabel}</td>
+      ${cells}
+    </tr>`;
+  }).join('');
+
+  const videoLink = videoId ? `<p style="margin-bottom:1.25rem;"><a href="https://youtu.be/${escHtml(videoId)}" target="_blank" style="color:#3b82f6;font-weight:600;">Full VOD on YouTube &#x25B6;</a></p>` : '';
 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Meet Recap - LiftAlert</title>
 ${FONT_LINKS}
 <style>
   ${SHARED_STYLES}
-  body { padding: 1.5rem 1rem; }
-  .container { max-width: 600px; margin: 0 auto; }
+  body { padding: 1.5rem 0.75rem; }
+  .container { max-width: 900px; margin: 0 auto; }
   .nav { margin-bottom: 1.5rem; font-size: 0.85rem; }
   .nav a { color: #777; }
   .nav a:hover { color: #F0F0F0; }
   .page-heading { font-family: 'Bebas Neue', sans-serif; font-size: 1.75rem; letter-spacing: 0.06em; margin-bottom: 0.25rem; }
-  .filter-input { width: 100%; padding: 0.6rem 0.85rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.95rem; font-family: 'Outfit', sans-serif; margin-bottom: 1.25rem; }
+  .filter-input { width: 100%; max-width: 300px; padding: 0.5rem 0.75rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.85rem; font-family: 'Outfit', sans-serif; margin-bottom: 1rem; }
   .filter-input:focus { outline: none; border-color: #DC2626; box-shadow: 0 0 0 3px rgba(220,38,38,0.1); }
-  .lifter-card { transition: opacity 0.2s; }
+  .scoresheet { width: 100%; border-collapse: collapse; }
+  .scoresheet th { position: sticky; top: 0; background: #0A0A0A; z-index: 2; }
+  .scoresheet .lifter-name {
+    position: sticky; left: 0; background: #0A0A0A; z-index: 1;
+    padding: 0.5rem 0.75rem; white-space: nowrap; font-weight: 500; font-size: 0.85rem;
+    border-bottom: 1px solid #1A1A1A; border-right: 2px solid #252525;
+    max-width: 160px; overflow: hidden; text-overflow: ellipsis;
+  }
+  .scoresheet .cell { text-align: center; padding: 0.45rem 0.25rem; border-bottom: 1px solid #1A1A1A; font-size: 0.85rem; }
+  .scoresheet .cell a {
+    color: #3b82f6; text-decoration: none; display: inline-block;
+    padding: 0.2rem 0.45rem; border-radius: 4px; transition: all 0.15s;
+    font-variant-numeric: tabular-nums; border-bottom: 1px dashed #3b82f6;
+  }
+  .scoresheet .cell a:hover { background: #DC2626; color: #fff; border-bottom-color: transparent; }
+  .scoresheet .cell.empty { color: #333; }
+  .scoresheet .lifter-row:hover td { background: #141414; }
+  .scoresheet .lifter-row:hover .lifter-name { background: #141414; }
+  .table-outer { position: relative; }
+  .table-outer::after { content: ''; position: absolute; top: 0; right: 0; bottom: 0; width: 32px; background: linear-gradient(to right, transparent, #0A0A0A); pointer-events: none; border-radius: 0 12px 12px 0; transition: opacity 0.3s; z-index: 1; }
+  .table-outer.scrolled-end::after { opacity: 0; }
+  .table-wrap { overflow-x: auto; border: 1px solid #1F1F1F; border-radius: 12px; background: #0A0A0A; }
+  @media (max-width: 600px) {
+    .scoresheet .lifter-name { font-size: 0.75rem; padding: 0.4rem 0.5rem; max-width: 110px; }
+    .scoresheet .cell { padding: 0.35rem 0.15rem; font-size: 0.75rem; }
+    .scoresheet .cell a { padding: 0.15rem 0.3rem; }
+  }
 </style>
 </head><body><div class="container animate-in">
   <div class="nav"><a href="/">&larr; Back to <span class="brand" style="font-size:1rem;"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
   <div class="page-heading">MEET RECAP</div>
-  <p class="subtitle" style="margin-bottom:0.5rem;">${escHtml(meetName || meetId)}</p>
+  <p class="subtitle" style="margin-bottom:0.5rem;">${escHtml(meetName || meetId)}${meetDate ? ` &mdash; ${escHtml(meetDate)}` : ''}</p>
   <p style="font-size:0.85rem;color:#555;margin-bottom:1rem;">${lifters.length} lifter${lifters.length !== 1 ? 's' : ''} &middot; ${timestamps.length} attempt${timestamps.length !== 1 ? 's' : ''}</p>
+  <div style="background:#0D1B2A;border:1px solid #1B3A5C;border-radius:8px;padding:0.6rem 1rem;margin-bottom:1rem;font-size:0.82rem;color:#7CB3E0;">&#x25B6; Click any <span style="color:#3b82f6;border-bottom:1px dashed #3b82f6;">weight</span> to jump to that attempt in the YouTube VOD</div>
   ${videoLink}
-  <input type="text" class="filter-input" placeholder="Filter lifters..." oninput="filterLifters(this.value)">
-  <div id="lifter-list">${lifterCards}</div>
+  <input type="text" class="filter-input" placeholder="Search lifters..." oninput="filterLifters(this.value)">
+  <div class="table-outer">
+    <div class="table-wrap">
+      <table class="scoresheet">
+        <thead>
+          <tr><th style="border-right:2px solid #252525;"></th>${groupRow}</tr>
+          <tr><th style="text-align:left;padding:0.35rem 0.75rem;font-size:0.65rem;border-bottom:2px solid #252525;border-right:2px solid #252525;">LIFTER</th>${subHeaderRow}</tr>
+        </thead>
+        <tbody>${bodyRows}</tbody>
+      </table>
+    </div>
+  </div>
 </div>
 <script>
+const tw = document.querySelector('.table-wrap');
+const to = document.querySelector('.table-outer');
+if (tw && to) {
+  const check = () => to.classList.toggle('scrolled-end', tw.scrollLeft + tw.clientWidth >= tw.scrollWidth - 2);
+  tw.addEventListener('scroll', check);
+  check();
+}
 function filterLifters(q) {
-  const cards = document.querySelectorAll('#lifter-list > div');
+  const rows = document.querySelectorAll('.lifter-row');
+  const seps = document.querySelectorAll('.wc-separator');
   const lower = q.toLowerCase();
-  cards.forEach(c => {
-    const name = c.querySelector('h2').textContent.toLowerCase();
-    c.style.display = name.includes(lower) ? '' : 'none';
+  const visibleWcs = new Set();
+  rows.forEach(r => {
+    const show = r.dataset.name.includes(lower);
+    r.style.display = show ? '' : 'none';
+    if (show && r.dataset.wc) visibleWcs.add(r.dataset.wc);
+  });
+  seps.forEach(s => {
+    const wcText = s.textContent.trim().replace(' kg','');
+    s.style.display = (!lower || visibleWcs.has(wcText)) ? '' : 'none';
   });
 }
 </script>
@@ -1357,7 +1880,7 @@ function recapListHTML(meetVideos) {
         <div style="background:#141414;border:1px solid #1F1F1F;border-radius:12px;padding:1.25rem;margin-bottom:1rem;position:relative;overflow:hidden;transition:border-color 0.2s;">
           <div style="position:absolute;top:0;left:0;bottom:0;width:3px;background:#DC2626;"></div>
           <h2 style="font-size:1.1rem;margin-bottom:0.25rem;">${escHtml(v.meet_name || v.meet_id)}</h2>
-          <p style="font-size:0.85rem;color:#555;">YouTube VOD linked &middot; Meet ID: ${escHtml(v.meet_id)}</p>
+          <p style="font-size:0.85rem;color:#555;">${v.meet_date ? escHtml(v.meet_date) + ' &middot; ' : ''}YouTube VOD linked</p>
         </div>
       </a>`;
     }).join('');
@@ -1420,7 +1943,7 @@ function mySubscriptionsHTML(email, subs, persistentSubs) {
         const details = [escHtml(meetDate), escHtml(meetLocation)].filter(Boolean).join(' &middot; ');
         return `<tr data-action="/unsubscribe" data-email="${escHtml(s.email)}" data-lifter="${escHtml(s.lifter_name)}" data-meet="${escHtml(s.meet_id)}">
           <td>${escHtml(s.lifter_name)}</td>
-          <td>${escHtml(mName)}${details ? '<br><span style="font-size:0.75rem;color:#555">' + details + '</span>' : ''}</td>
+          <td>${escHtml(mName)}${details ? '<br><span style="font-size:0.75rem;color:#555">' + details + '</span>' : ''}${s.notify_prefs ? '<br><span style="font-size:0.7rem;color:#666;">' + escHtml(s.notify_prefs.split(',').join(', ')) + '</span>' : ''}</td>
           <td style="text-align:right">
             <span class="remove-wrap">
               <button type="button" onclick="this.parentElement.classList.add('confirming')" style="background:none;border:none;color:#DC2626;cursor:pointer;font-size:0.85rem;padding:0.25rem 0.5rem;font-family:'Outfit',sans-serif;" class="remove-btn">remove</button>
@@ -1457,7 +1980,6 @@ ${FONT_LINKS}
   <form method="GET" action="/my-subscriptions">
     <label for="email">Email</label>
     <input type="email" id="email" name="email" required placeholder="you@example.com" value="${email ? escHtml(email) : ''}">
-    <button type="submit" class="btn-primary">LOOK UP</button>
   </form>
   ${content}
   <a href="/" class="back-link">&larr; Subscribe to a lifter</a>
@@ -1521,12 +2043,13 @@ const server = http.createServer(async (req, res) => {
 
     // Support JSON bulk subscribe or legacy form body
     const isJSON = (req.headers['content-type'] || '').includes('application/json');
-    let email, items; // items = [{ name, meetId }]
+    let email, items, notifyPrefs; // items = [{ name, meetId }]
     if (isJSON) {
       try {
         const parsed = JSON.parse(body);
         email = parsed.email;
         items = (parsed.selections || []).map(s => ({ name: s.name, meetId: s.meetId }));
+        notifyPrefs = parsed.notifyPrefs || 'in-the-hole';
       } catch {
         res.writeHead(400, { 'Content-Type': 'text/plain' });
         res.end('Invalid JSON');
@@ -1535,6 +2058,7 @@ const server = http.createServer(async (req, res) => {
     } else {
       const form = parseFormBody(body);
       email = form.email;
+      notifyPrefs = form.notifyPrefs || 'in-the-hole';
       if (form.lifter && form.meet) items = [{ name: form.lifter, meetId: form.meet }];
       else items = [];
     }
@@ -1564,10 +2088,10 @@ const server = http.createServer(async (req, res) => {
 
     try {
       for (const item of items) {
-        await addSubscription(email, item.name, item.meetId);
-        await addPersistentSubscription(email, item.name);
+        await addSubscription(email, item.name, item.meetId, notifyPrefs);
+        await addPersistentSubscription(email, item.name, notifyPrefs);
         delete subsCache[item.meetId];
-        console.log(`[SUBSCRIBE] ${email} -> "${item.name}" in meet ${item.meetId} (+ persistent follow)`);
+        console.log(`[SUBSCRIBE] ${email} -> "${item.name}" in meet ${item.meetId} (prefs: ${notifyPrefs}) (+ persistent follow)`);
         startMeet(item.meetId);
       }
       // Send one confirmation email for the batch
@@ -1576,13 +2100,13 @@ const server = http.createServer(async (req, res) => {
       const meetName = meets[firstMeet]?.meet?.name || firstMeet;
       const meetDate = meets[firstMeet]?.meet?.date || '';
       if (items.length === 1) {
-        sendSubscriptionConfirmation(email, names[0], meetName, meetDate, firstMeet);
+        sendSubscriptionConfirmation(email, names[0], meetName, meetDate, firstMeet, notifyPrefs);
       } else {
-        sendSubscriptionConfirmation(email, names.join(', '), meetName, meetDate, firstMeet);
+        sendSubscriptionConfirmation(email, names.join(', '), meetName, meetDate, firstMeet, notifyPrefs);
       }
       const allSubs = await getSubscriptionsByEmail(email);
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(bulkSuccessHTML(email, items, allSubs));
+      res.end(bulkSuccessHTML(email, items, allSubs, notifyPrefs));
     } catch (err) {
       console.error(`[SUBSCRIBE ERROR] ${err.message}`);
       res.writeHead(500, { 'Content-Type': 'text/plain' });
@@ -1601,6 +2125,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     const meetName = meets[meet]?.meet?.name || meet;
+    const meetDate = meets[meet]?.meet?.date || '';
     const confirmHtml = `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Unsubscribe - LiftAlert</title>
 ${FONT_LINKS}
@@ -1615,7 +2140,7 @@ ${FONT_LINKS}
 </style>
 </head><body><div class="card animate-in">
   <span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span>
-  <p class="confirm-msg">Remove alert for <strong>${escHtml(lifter)}</strong> at <strong>${escHtml(meetName)}</strong>?<br><span style="font-size:0.85rem;">This also stops auto-subscribing to this lifter in future meets.</span></p>
+  <p class="confirm-msg">Remove alert for <strong>${escHtml(lifter)}</strong> at <strong>${escHtml(meetName)}</strong>${meetDate ? ` (${escHtml(meetDate)})` : ''}?<br><span style="font-size:0.85rem;">This also stops auto-subscribing to this lifter in future meets.</span></p>
   <form id="unsub-form" method="POST" action="/unsubscribe">
     <input type="hidden" name="email" value="${escHtml(email)}">
     <input type="hidden" name="lifter" value="${escHtml(lifter)}">
@@ -1753,37 +2278,54 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
     res.end(JSON.stringify(allMeets, null, 2));
 
   } else if (req.method === 'GET' && url.pathname === '/meets') {
-    if (meetsPageCache.html && Date.now() - meetsPageCache.ts < MEETS_PAGE_CACHE_TTL) {
+    const email = url.searchParams.get('email') || '';
+    // Get user's subscribed meet IDs
+    let subscribedMeetIds = [];
+    if (email) {
+      try {
+        const subs = await getSubscriptionsByEmail(email);
+        subscribedMeetIds = [...new Set(subs.map(s => s.meet_id))];
+      } catch (err) {
+        console.error(`[MEETS] Error fetching subscriptions for ${email}: ${err.message}`);
+      }
+    }
+    const cacheKey = email || '';
+    const cached = meetsPageCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < MEETS_PAGE_CACHE_TTL) {
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(meetsPageCache.html);
+      res.end(cached.html);
     } else {
+      const parseMeetDate = (m) => {
+        const parts = (m.date || '').split('/');
+        if (parts.length !== 3) return 0;
+        const fmt = (meets[m.id]?.meet?.dateFormat) || 'MM/DD/YYYY';
+        let y, mo, d;
+        if (fmt === 'DD/MM/YYYY') { [d, mo, y] = parts; }
+        else { [mo, d, y] = parts; }
+        return new Date(Number(y), Number(mo) - 1, Number(d)).getTime() || 0;
+      };
       const meetList = [];
       for (const [mid, st] of Object.entries(meets)) {
         const lifterCount = Object.keys(st.lifters).length;
         const platformCount = Object.keys(st.platforms).length;
         const meetDoc = st.meet || {};
-        const platformSummaries = [];
+        // Get current lifter from first platform (for status line on card)
+        let currentLift = null;
         for (const [pid, platform] of Object.entries(st.platforms)) {
           const cached = st.platformSummaryCache?.[pid];
-          if (cached) {
-            platformSummaries.push({ name: platform.name || pid, ...cached });
-          } else {
-            const parsed = parseAttemptId(platform.currentAttemptId);
-            const currentLifter = parsed ? st.lifters[parsed.lifterId] : null;
-            const order = computeAttemptOrder(st, pid);
-            const currentIdx = platform.currentAttemptId ? order.findIndex(a => a.attemptId === platform.currentAttemptId) : -1;
-            const nextUp = currentIdx >= 0 ? order.slice(currentIdx + 1, currentIdx + 3) : [];
-            platformSummaries.push({
-              name: platform.name || pid,
-              currentLifter: currentLifter?.name || null,
-              liftName: parsed?.liftName || null,
-              attemptNumber: parsed?.attemptNumber || null,
-              nextUp: nextUp.map(a => ({ name: a.lifterName, lift: a.liftName, attempt: a.attemptNumber })),
-            });
+          if (cached?.currentLifter) {
+            currentLift = { lifter: cached.currentLifter, liftName: cached.liftName, attemptNumber: cached.attemptNumber };
+            break;
+          }
+          const parsed = parseAttemptId(platform.currentAttemptId);
+          if (parsed) {
+            const cl = st.lifters[parsed.lifterId];
+            if (cl) {
+              currentLift = { lifter: cl.name || 'Unknown', liftName: parsed.liftName, attemptNumber: parsed.attemptNumber };
+              break;
+            }
           }
         }
-        const lifterNames = Object.values(st.lifters)
-          .map(l => l.name).filter(Boolean).sort((a, b) => a.localeCompare(b));
         meetList.push({
           id: mid,
           name: meetDoc.name || mid,
@@ -1792,24 +2334,50 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
           lifterCount,
           platformCount,
           watching: watchingMeets.has(mid),
-          platforms: platformSummaries,
-          lifters: lifterNames,
+          currentLift,
         });
       }
-      meetList.sort((a, b) => a.name.localeCompare(b.name));
-      const html = meetsHTML(meetList);
-      meetsPageCache = { html, ts: Date.now() };
+      // Sort chronologically, newest first
+      meetList.sort((a, b) => parseMeetDate(b) - parseMeetDate(a));
+      const html = meetsHTML(meetList, subscribedMeetIds);
+      meetsPageCache.set(cacheKey, { html, ts: Date.now() });
+      // Evict oldest entries if cache is too large
+      if (meetsPageCache.size > MEETS_PAGE_CACHE_MAX) {
+        const oldest = meetsPageCache.keys().next().value;
+        meetsPageCache.delete(oldest);
+      }
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(html);
+    }
+
+  } else if (req.method === 'GET' && url.pathname.startsWith('/meets/')) {
+    const detailMeetId = url.pathname.split('/')[2];
+    const email = url.searchParams.get('email') || '';
+    if (!detailMeetId || !meets[detailMeetId]) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Meet not found');
+    } else {
+      let subscribedLifterNames = [];
+      if (email) {
+        try {
+          const subs = await getSubscriptionsByEmail(email);
+          subscribedLifterNames = subs.filter(s => s.meet_id === detailMeetId).map(s => s.lifter_name);
+        } catch (err) {
+          console.error(`[MEET DETAIL] Error fetching subscriptions: ${err.message}`);
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(meetDetailHTML(detailMeetId, meets[detailMeetId], subscribedLifterNames));
     }
 
   } else if (req.method === 'GET' && url.pathname === '/api/lifters') {
     const results = [];
     for (const [meetId, st] of Object.entries(meets)) {
       const meetName = st.meet?.name || meetId;
+      const meetDate = st.meet?.date || '';
       for (const lifter of Object.values(st.lifters)) {
         if (lifter.name) {
-          results.push({ name: lifter.name, meetId, meetName });
+          results.push({ name: lifter.name, meetId, meetName, meetDate });
         }
       }
     }
@@ -1840,7 +2408,7 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
         res.end(`No attempt timestamps found for meet ${recapMeetId}.`);
       } else {
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(recapHTML(recapMeetId, video.meet_name, video.youtube_video_id, Number(video.stream_start_epoch), timestamps));
+        res.end(recapHTML(recapMeetId, video.meet_name, video.youtube_video_id, Number(video.stream_start_epoch), timestamps, video.meet_date));
       }
     }
 

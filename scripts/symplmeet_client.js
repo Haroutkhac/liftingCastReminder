@@ -146,6 +146,7 @@ function normalizeSymPlmeetData(meetId, data, meetState) {
       session: 1,
       flight: l.flight || 'A',
       platformId: 'sp-default',
+      bodyWeight: l.bw || l.bodyWeight || l.bodyweight || null,
     };
 
     // Store pre-computed best lifts if available
@@ -273,6 +274,7 @@ function watchSymPlmeet(meetId, onUpdate) {
     reconnection: true,
     reconnectionDelay: 2000,
     reconnectionDelayMax: 30000,
+    pingTimeout: 60000,
   });
 
   socket.on('connect', () => {

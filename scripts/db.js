@@ -55,10 +55,12 @@ async function initDB() {
       lift_name TEXT NOT NULL,
       attempt_number TEXT NOT NULL,
       weight NUMERIC,
+      body_weight NUMERIC,
       wall_clock_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE(meet_id, platform_id, attempt_id)
     )
   `);
+  await pool.query(`ALTER TABLE attempt_timestamps ADD COLUMN IF NOT EXISTS body_weight NUMERIC`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS meet_videos (
       meet_id TEXT PRIMARY KEY,
@@ -69,12 +71,15 @@ async function initDB() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
+  await pool.query(`ALTER TABLE meet_videos ADD COLUMN IF NOT EXISTS meet_date TEXT`);
+  await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS notify_prefs TEXT DEFAULT 'in-the-hole'`);
+  await pool.query(`ALTER TABLE persistent_subscriptions ADD COLUMN IF NOT EXISTS notify_prefs TEXT DEFAULT 'in-the-hole'`);
   console.log('[DB] All tables ready');
 }
 
 async function getSubscriptions(meetId) {
   const { rows } = await pool.query(
-    'SELECT email, lifter_name, meet_id FROM subscriptions WHERE meet_id = $1',
+    'SELECT email, lifter_name, meet_id, notify_prefs FROM subscriptions WHERE meet_id = $1',
     [meetId]
   );
   return rows;
@@ -85,18 +90,19 @@ async function getAllMeetIds() {
   return rows.map(r => r.meet_id);
 }
 
-async function addSubscription(email, lifterName, meetId) {
+async function addSubscription(email, lifterName, meetId, notifyPrefs) {
+  const prefs = notifyPrefs || 'in-the-hole';
   await pool.query(
-    `INSERT INTO subscriptions (email, lifter_name, meet_id)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (email, lifter_name, meet_id) DO NOTHING`,
-    [email, lifterName, meetId]
+    `INSERT INTO subscriptions (email, lifter_name, meet_id, notify_prefs)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (email, lifter_name, meet_id) DO UPDATE SET notify_prefs = $4`,
+    [email, lifterName, meetId, prefs]
   );
 }
 
 async function getSubscriptionsByEmail(email) {
   const { rows } = await pool.query(
-    'SELECT email, lifter_name, meet_id, created_at FROM subscriptions WHERE email = $1 ORDER BY created_at DESC',
+    'SELECT email, lifter_name, meet_id, notify_prefs, created_at FROM subscriptions WHERE email = $1 ORDER BY created_at DESC',
     [email]
   );
   return rows;
@@ -110,12 +116,13 @@ async function removeSubscription(email, lifterName, meetId) {
   return rowCount > 0;
 }
 
-async function addPersistentSubscription(email, lifterName) {
+async function addPersistentSubscription(email, lifterName, notifyPrefs) {
+  const prefs = notifyPrefs || 'in-the-hole';
   await pool.query(
-    `INSERT INTO persistent_subscriptions (email, lifter_name)
-     VALUES ($1, $2)
-     ON CONFLICT (email, LOWER(lifter_name)) DO NOTHING`,
-    [email, lifterName]
+    `INSERT INTO persistent_subscriptions (email, lifter_name, notify_prefs)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (email, LOWER(lifter_name)) DO UPDATE SET notify_prefs = $3`,
+    [email, lifterName, prefs]
   );
 }
 
@@ -136,7 +143,7 @@ async function getPersistentSubscriptionsByEmail(email) {
 }
 
 async function getAllPersistentSubscriptions() {
-  const { rows } = await pool.query('SELECT email, lifter_name FROM persistent_subscriptions');
+  const { rows } = await pool.query('SELECT email, lifter_name, notify_prefs FROM persistent_subscriptions');
   return rows;
 }
 
@@ -152,12 +159,12 @@ async function getStats() {
   };
 }
 
-async function logAttemptTimestamp(meetId, platformId, attemptId, lifterId, lifterName, liftName, attemptNumber, weight) {
+async function logAttemptTimestamp(meetId, platformId, attemptId, lifterId, lifterName, liftName, attemptNumber, weight, bodyWeight) {
   await pool.query(
-    `INSERT INTO attempt_timestamps (meet_id, platform_id, attempt_id, lifter_id, lifter_name, lift_name, attempt_number, weight)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO attempt_timestamps (meet_id, platform_id, attempt_id, lifter_id, lifter_name, lift_name, attempt_number, weight, body_weight)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      ON CONFLICT (meet_id, platform_id, attempt_id) DO NOTHING`,
-    [meetId, platformId, attemptId, lifterId, lifterName, liftName, attemptNumber, weight || null]
+    [meetId, platformId, attemptId, lifterId, lifterName, liftName, attemptNumber, weight || null, bodyWeight || null]
   );
 }
 
@@ -177,12 +184,12 @@ async function getAttemptTimestampsByMeet(meetId) {
   return rows;
 }
 
-async function setMeetVideo(meetId, youtubeVideoId, youtubeUrl, streamStartEpoch, meetName) {
+async function setMeetVideo(meetId, youtubeVideoId, youtubeUrl, streamStartEpoch, meetName, meetDate) {
   await pool.query(
-    `INSERT INTO meet_videos (meet_id, youtube_video_id, youtube_url, stream_start_epoch, meet_name)
-     VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (meet_id) DO UPDATE SET youtube_video_id = $2, youtube_url = $3, stream_start_epoch = $4, meet_name = COALESCE($5, meet_videos.meet_name)`,
-    [meetId, youtubeVideoId, youtubeUrl, streamStartEpoch, meetName || null]
+    `INSERT INTO meet_videos (meet_id, youtube_video_id, youtube_url, stream_start_epoch, meet_name, meet_date)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (meet_id) DO UPDATE SET youtube_video_id = $2, youtube_url = $3, stream_start_epoch = $4, meet_name = COALESCE($5, meet_videos.meet_name), meet_date = COALESCE($6, meet_videos.meet_date)`,
+    [meetId, youtubeVideoId, youtubeUrl, streamStartEpoch, meetName || null, meetDate || null]
   );
 }
 

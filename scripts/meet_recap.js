@@ -45,6 +45,11 @@ const outputDir = args['output-dir'] || './recaps';
 const preBuffer = parseInt(args['pre-buffer'] || '30', 10);
 const postBuffer = parseInt(args['post-buffer'] || '20', 10);
 
+// Timestamps are logged when an attempt becomes "current" on the platform,
+// which is typically ~15s before the lifter actually approaches the bar.
+// Subtract this offset so YouTube links land closer to the actual lift.
+const TIMESTAMP_LEAD_SECONDS = 15;
+
 // Require DATABASE_URL
 if (!process.env.DATABASE_URL) {
   console.error('DATABASE_URL env var required. Export it or run with:\n  DATABASE_URL=<url> node scripts/meet_recap.js ...');
@@ -84,7 +89,7 @@ function clipAttempts(videoUrl, lifterName, attempts, streamStart) {
 
   const clipFiles = [];
   attempts.forEach((a, i) => {
-    const offset = Math.floor((new Date(a.wall_clock_time).getTime() / 1000) - streamStart);
+    const offset = Math.floor((new Date(a.wall_clock_time).getTime() / 1000) - streamStart - TIMESTAMP_LEAD_SECONDS);
     const start = Math.max(0, offset - preBuffer);
     const end = offset + postBuffer;
     const clipFile = path.join(lifterDir, `${String(i + 1).padStart(2, '0')}_${a.lift_name}_${a.attempt_number}.mp4`);
@@ -130,7 +135,8 @@ async function setVideo() {
     process.exit(1);
   }
   const meetName = args['meet-name'] || null;
-  await setMeetVideo(meetId, videoId, youtubeUrl, streamStart, meetName);
+  const meetDate = args['meet-date'] || null;
+  await setMeetVideo(meetId, videoId, youtubeUrl, streamStart, meetName, meetDate);
   console.log(`Saved video for meet ${meetId}:`);
   console.log(`  Video ID: ${videoId}`);
   console.log(`  Stream start: ${new Date(streamStart * 1000).toISOString()}`);
@@ -222,7 +228,7 @@ async function main() {
 
     for (const a of data.attempts) {
       const wallEpoch = Math.floor(new Date(a.wall_clock_time).getTime() / 1000);
-      const offset = Math.max(0, wallEpoch - effectiveStart);
+      const offset = Math.max(0, wallEpoch - effectiveStart - TIMESTAMP_LEAD_SECONDS);
       const w = a.weight ? ` @ ${a.weight}kg` : '';
       const timeStr = formatTime(offset);
       const ytLink = videoId ? `https://youtu.be/${videoId}?t=${offset}` : `offset: ${timeStr}`;
