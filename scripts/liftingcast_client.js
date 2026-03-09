@@ -1115,6 +1115,12 @@ function meetsHTML(meetList) {
         ${details ? `<p style="font-size:0.85rem;color:#555;margin-bottom:0.5rem;">${details}</p>` : ''}
         <p style="font-size:0.85rem;color:#777;">${m.lifterCount} lifters &middot; ${m.platformCount} platform${m.platformCount !== 1 ? 's' : ''}</p>
         ${platformRows}
+        ${m.lifters.length > 0 ? `<details style="margin-top:0.6rem;">
+          <summary style="cursor:pointer;font-size:0.8rem;color:#777;user-select:none;">View all lifters</summary>
+          <div style="margin-top:0.4rem;padding:0.5rem 0.75rem;background:#0A0A0A;border:1px solid #1F1F1F;border-radius:8px;max-height:200px;overflow-y:auto;font-size:0.8rem;color:#999;line-height:1.6;">
+            ${m.lifters.map(n => escHtml(n)).join('<br>')}
+          </div>
+        </details>` : ''}
       </div>`;
     }).join('');
 
@@ -1481,6 +1487,8 @@ ${FONT_LINKS}
             });
           }
         }
+        const lifterNames = Object.values(st.lifters)
+          .map(l => l.name).filter(Boolean).sort((a, b) => a.localeCompare(b));
         meetList.push({
           id: mid,
           name: meetDoc.name || mid,
@@ -1490,6 +1498,7 @@ ${FONT_LINKS}
           platformCount,
           watching: watchingMeets.has(mid),
           platforms: platformSummaries,
+          lifters: lifterNames,
         });
       }
       meetList.sort((a, b) => a.name.localeCompare(b.name));
