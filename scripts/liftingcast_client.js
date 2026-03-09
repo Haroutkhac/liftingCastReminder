@@ -28,7 +28,7 @@ const http = require('http');
 const https = require('https');
 const { initDB, getSubscriptions, getAllMeetIds, addSubscription, removeSubscription, getSubscriptionsByEmail,
         addPersistentSubscription, removePersistentSubscription, getPersistentSubscriptionsByEmail, getAllPersistentSubscriptions,
-        getStats } = require('./db');
+        getStats, logAttemptTimestamp, getAttemptTimestampsByMeet, getMeetVideo, getMeetVideos, setMeetVideo } = require('./db');
 const { sendOnDeckEmail, sendSubscriptionConfirmation, sendAutoSubscribeNotification } = require('./email');
 const { getMeetPlatform, loadSymPlmeetMeet, watchSymPlmeet, stopSymPlmeet,
         stopAllSymPlmeet, discoverTodaysSymPlmeetMeets, normalizeSymPlmeetData } = require('./symplmeet_client');
@@ -309,6 +309,17 @@ function checkPlatforms(meetId) {
       ts.notifiedLifting = new Set();
 
       console.log(`\n[CURRENT] ${currentName} - ${parsed.liftName} attempt ${parsed.attemptNumber} (${platform.name || platformId}) [${meetId}]`);
+
+      // Log timestamp for meet recap feature
+      const currentAttemptDoc = st.attempts[platform.currentAttemptId];
+      logAttemptTimestamp(
+        meetId, platformId, platform.currentAttemptId,
+        parsed.lifterId, currentName, parsed.liftName, parsed.attemptNumber,
+        currentAttemptDoc?.weight
+      ).catch(err => console.error(`[TIMESTAMP ERROR] ${err.message}`));
+
+      // Auto-discover YouTube VOD for this meet (fire-and-forget, runs once per meet)
+      autoLinkYouTubeVideo(meetId, st.meet?.name || meetId).catch(err => console.error(`[YT ERROR] ${err.message}`));
 
       if (nextAttempts.length > 0) {
         const upcoming = nextAttempts.slice(0, 5).map((a, i) => {
@@ -739,6 +750,85 @@ function parseFormBody(body) {
   return Object.fromEntries(params.entries());
 }
 
+// --- YouTube auto-discovery ---
+const videoSearched = new Set(); // track which meets we've already searched for
+
+function ytFetch(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en' } }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        return ytFetch(res.headers.location).then(resolve, reject);
+      }
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => resolve(body));
+      res.on('error', reject);
+    }).on('error', reject);
+  });
+}
+
+async function searchYouTube(query) {
+  try {
+    const encoded = encodeURIComponent(query);
+    // sp=EgJAAQ%3D%3D filters for "Live" streams
+    const html = await ytFetch(`https://www.youtube.com/results?search_query=${encoded}&sp=EgJAAQ%3D%3D`);
+    const match = html.match(/"videoId":"([^"]{11})"/);
+    return match ? match[1] : null;
+  } catch (err) {
+    console.error(`[YT SEARCH ERROR] ${err.message}`);
+    return null;
+  }
+}
+
+async function getYouTubeStreamStart(videoId) {
+  try {
+    const html = await ytFetch(`https://www.youtube.com/watch?v=${videoId}`);
+    const match = html.match(/"startTimestamp":"([^"]+)"/);
+    if (match) {
+      return Math.floor(new Date(match[1]).getTime() / 1000);
+    }
+    return null;
+  } catch (err) {
+    console.error(`[YT META ERROR] ${err.message}`);
+    return null;
+  }
+}
+
+async function autoLinkYouTubeVideo(meetId, meetName) {
+  if (videoSearched.has(meetId)) return;
+  videoSearched.add(meetId);
+
+  // Check if already linked
+  try {
+    const existing = await getMeetVideo(meetId);
+    if (existing) {
+      console.log(`[YT] Meet ${meetId} already linked to ${existing.youtube_video_id}`);
+      return;
+    }
+  } catch (_) {}
+
+  console.log(`[YT] Searching YouTube for "${meetName}"...`);
+  const videoId = await searchYouTube(meetName);
+  if (!videoId) {
+    console.log(`[YT] No video found for "${meetName}"`);
+    return;
+  }
+
+  console.log(`[YT] Found video ${videoId}, fetching stream start time...`);
+  const streamStart = await getYouTubeStreamStart(videoId);
+  if (!streamStart) {
+    console.log(`[YT] Could not get stream start for ${videoId}`);
+    return;
+  }
+
+  try {
+    await setMeetVideo(meetId, videoId, `https://youtu.be/${videoId}`, streamStart, meetName);
+    console.log(`[YT] Auto-linked meet ${meetId} -> https://youtu.be/${videoId} (start: ${new Date(streamStart * 1000).toISOString()})`);
+  } catch (err) {
+    console.error(`[YT DB ERROR] ${err.message}`);
+  }
+}
+
 // --- Shared HTML design tokens ---
 const FONT_LINKS = '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">';
 
@@ -772,6 +862,9 @@ const SHARED_STYLES = `
   @keyframes fadeUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
   .animate-in { animation: fadeUp 0.5s ease-out both; }
+  .remove-wrap .confirm-btns { display: none; }
+  .remove-wrap.confirming .remove-btn { display: none; }
+  .remove-wrap.confirming .confirm-btns { display: inline !important; }
 `;
 
 // --- HTML subscription form ---
@@ -831,7 +924,7 @@ const FORM_HTML = `<!DOCTYPE html>
       <button type="submit" class="btn-primary">SUBSCRIBE</button>
     </form>
     <div class="meet-count" id="meetCount"><span class="pulse-dot"></span> <span id="meetCountText"></span></div>
-    <div class="footer-links"><a href="/my-subscriptions">My subscriptions</a><span class="sep">&middot;</span><a href="/meets">Today&rsquo;s meets</a></div>
+    <div class="footer-links"><a href="/my-subscriptions">My subscriptions</a><span class="sep">&middot;</span><a href="/meets">Today&rsquo;s meets</a><span class="sep">&middot;</span><a href="/recaps">Meet recaps</a></div>
   </div>
   <script>
     const lifterInput = document.getElementById('lifterInput');
@@ -1177,6 +1270,118 @@ ${FONT_LINKS}
 </div></body></html>`;
 }
 
+function recapHTML(meetId, meetName, videoId, streamStart, timestamps) {
+  // Group by lifter
+  const byLifter = {};
+  for (const t of timestamps) {
+    if (!byLifter[t.lifter_id]) byLifter[t.lifter_id] = { name: t.lifter_name, attempts: [] };
+    byLifter[t.lifter_id].attempts.push(t);
+  }
+
+  // Sort lifters alphabetically
+  const lifters = Object.values(byLifter).sort((a, b) => a.name.localeCompare(b.name));
+
+  const lifterCards = lifters.map(l => {
+    const rows = l.attempts.map(a => {
+      const wallEpoch = Math.floor(new Date(a.wall_clock_time).getTime() / 1000);
+      const offset = Math.max(0, wallEpoch - streamStart);
+      const h = Math.floor(offset / 3600);
+      const m = Math.floor((offset % 3600) / 60);
+      const s = Math.floor(offset % 60);
+      const timeStr = h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+      const w = a.weight ? `${a.weight} kg` : '';
+      const liftLabel = a.lift_name.charAt(0).toUpperCase() + a.lift_name.slice(1);
+      const ytLink = `https://youtu.be/${videoId}?t=${offset}`;
+      const goodBad = a.result === 'good' ? ' style="color:#4ADE80;"' : a.result === 'bad' ? ' style="color:#FCA5A5;"' : '';
+      return `<tr>
+        <td${goodBad}>${escHtml(liftLabel)}</td>
+        <td${goodBad}>${escHtml(String(a.attempt_number))}</td>
+        <td${goodBad}>${escHtml(w)}</td>
+        <td><a href="${escHtml(ytLink)}" target="_blank" style="color:#3b82f6;">${timeStr} &#x25B6;</a></td>
+      </tr>`;
+    }).join('');
+    return `<div style="background:#141414;border:1px solid #1F1F1F;border-radius:12px;padding:1.25rem;margin-bottom:1rem;position:relative;overflow:hidden;">
+      <div style="position:absolute;top:0;left:0;bottom:0;width:3px;background:#DC2626;"></div>
+      <h2 style="font-size:1.1rem;margin-bottom:0.75rem;">${escHtml(l.name)}</h2>
+      <table>
+        <thead><tr><th>Lift</th><th>Att</th><th>Weight</th><th>Video</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  }).join('');
+
+  const videoLink = videoId ? `<p style="margin-bottom:1.5rem;"><a href="https://youtu.be/${escHtml(videoId)}" target="_blank" style="color:#3b82f6;font-weight:600;">Full VOD on YouTube &#x25B6;</a></p>` : '';
+
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Meet Recap - LiftAlert</title>
+${FONT_LINKS}
+<style>
+  ${SHARED_STYLES}
+  body { padding: 1.5rem 1rem; }
+  .container { max-width: 600px; margin: 0 auto; }
+  .nav { margin-bottom: 1.5rem; font-size: 0.85rem; }
+  .nav a { color: #777; }
+  .nav a:hover { color: #F0F0F0; }
+  .page-heading { font-family: 'Bebas Neue', sans-serif; font-size: 1.75rem; letter-spacing: 0.06em; margin-bottom: 0.25rem; }
+  .filter-input { width: 100%; padding: 0.6rem 0.85rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.95rem; font-family: 'Outfit', sans-serif; margin-bottom: 1.25rem; }
+  .filter-input:focus { outline: none; border-color: #DC2626; box-shadow: 0 0 0 3px rgba(220,38,38,0.1); }
+  .lifter-card { transition: opacity 0.2s; }
+</style>
+</head><body><div class="container animate-in">
+  <div class="nav"><a href="/">&larr; Back to <span class="brand" style="font-size:1rem;"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
+  <div class="page-heading">MEET RECAP</div>
+  <p class="subtitle" style="margin-bottom:0.5rem;">${escHtml(meetName || meetId)}</p>
+  <p style="font-size:0.85rem;color:#555;margin-bottom:1rem;">${lifters.length} lifter${lifters.length !== 1 ? 's' : ''} &middot; ${timestamps.length} attempt${timestamps.length !== 1 ? 's' : ''}</p>
+  ${videoLink}
+  <input type="text" class="filter-input" placeholder="Filter lifters..." oninput="filterLifters(this.value)">
+  <div id="lifter-list">${lifterCards}</div>
+</div>
+<script>
+function filterLifters(q) {
+  const cards = document.querySelectorAll('#lifter-list > div');
+  const lower = q.toLowerCase();
+  cards.forEach(c => {
+    const name = c.querySelector('h2').textContent.toLowerCase();
+    c.style.display = name.includes(lower) ? '' : 'none';
+  });
+}
+</script>
+</body></html>`;
+}
+
+function recapListHTML(meetVideos) {
+  const cards = meetVideos.length === 0
+    ? '<p style="color:#555;text-align:center;margin:2rem 0;">No meet recaps available yet.</p>'
+    : meetVideos.map(v => {
+      return `<a href="/recap/${escHtml(v.meet_id)}" style="display:block;text-decoration:none;color:inherit;">
+        <div style="background:#141414;border:1px solid #1F1F1F;border-radius:12px;padding:1.25rem;margin-bottom:1rem;position:relative;overflow:hidden;transition:border-color 0.2s;">
+          <div style="position:absolute;top:0;left:0;bottom:0;width:3px;background:#DC2626;"></div>
+          <h2 style="font-size:1.1rem;margin-bottom:0.25rem;">${escHtml(v.meet_name || v.meet_id)}</h2>
+          <p style="font-size:0.85rem;color:#555;">YouTube VOD linked &middot; Meet ID: ${escHtml(v.meet_id)}</p>
+        </div>
+      </a>`;
+    }).join('');
+
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Meet Recaps - LiftAlert</title>
+${FONT_LINKS}
+<style>
+  ${SHARED_STYLES}
+  body { padding: 1.5rem 1rem; }
+  .container { max-width: 600px; margin: 0 auto; }
+  .nav { margin-bottom: 1.5rem; font-size: 0.85rem; }
+  .nav a { color: #777; }
+  .nav a:hover { color: #F0F0F0; }
+  .page-heading { font-family: 'Bebas Neue', sans-serif; font-size: 1.75rem; letter-spacing: 0.06em; margin-bottom: 0.25rem; }
+</style>
+</head><body><div class="container animate-in">
+  <div class="nav"><a href="/">&larr; Back to <span class="brand" style="font-size:1rem;"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
+  <div class="page-heading">MEET RECAPS</div>
+  <p class="subtitle" style="margin-bottom:1.5rem;">${meetVideos.length} meet${meetVideos.length !== 1 ? 's' : ''} with video</p>
+  ${cards}
+</div></body></html>`;
+}
+
 function mySubscriptionsHTML(email, subs, persistentSubs) {
   const heading = email ? `Subscriptions for ${escHtml(email)}` : 'My Subscriptions';
   let content = '';
@@ -1186,14 +1391,16 @@ function mySubscriptionsHTML(email, subs, persistentSubs) {
     // Persistent "Following" section
     let followingSection = '';
     if (persistentSubs && persistentSubs.length > 0) {
-      const pRows = persistentSubs.map(ps => `<tr>
+      const pRows = persistentSubs.map(ps => `<tr data-action="/stop-following" data-email="${escHtml(email)}" data-lifter="${escHtml(ps.lifter_name)}">
         <td>${escHtml(ps.lifter_name)}</td>
         <td style="text-align:right">
-          <form method="POST" action="/stop-following" style="display:inline" onsubmit="return confirm('Stop following ${escHtml(ps.lifter_name).replace(/'/g, "\\'")}? (Current meet alerts stay active)')">
-            <input type="hidden" name="email" value="${escHtml(email)}">
-            <input type="hidden" name="lifter" value="${escHtml(ps.lifter_name)}">
-            <button type="submit" style="background:none;border:none;color:#DC2626;cursor:pointer;font-size:0.85rem;padding:0.25rem 0.5rem;font-family:'Outfit',sans-serif;">stop following</button>
-          </form>
+          <span class="remove-wrap">
+            <button type="button" onclick="this.parentElement.classList.add('confirming')" style="background:none;border:none;color:#DC2626;cursor:pointer;font-size:0.85rem;padding:0.25rem 0.5rem;font-family:'Outfit',sans-serif;" class="remove-btn">stop following</button>
+            <span class="confirm-btns" style="display:none;">
+              <button type="button" onclick="removeRow(this)" style="background:none;border:none;color:#4ADE80;cursor:pointer;font-size:1.1rem;padding:0.25rem 0.4rem;" title="Confirm">&#x2713;</button>
+              <button type="button" onclick="this.closest('.remove-wrap').classList.remove('confirming')" style="background:none;border:none;color:#DC2626;cursor:pointer;font-size:1.1rem;padding:0.25rem 0.4rem;" title="Cancel">&#x2717;</button>
+            </span>
+          </span>
         </td>
       </tr>`).join('');
       followingSection = `<div style="margin-top:1.25rem;">
@@ -1211,17 +1418,17 @@ function mySubscriptionsHTML(email, subs, persistentSubs) {
         const meetDate = meets[s.meet_id]?.meet?.date || '';
         const meetLocation = meets[s.meet_id]?.meet?.location || meets[s.meet_id]?.meet?.city || '';
         const details = [escHtml(meetDate), escHtml(meetLocation)].filter(Boolean).join(' &middot; ');
-        return `<tr>
+        return `<tr data-action="/unsubscribe" data-email="${escHtml(s.email)}" data-lifter="${escHtml(s.lifter_name)}" data-meet="${escHtml(s.meet_id)}">
           <td>${escHtml(s.lifter_name)}</td>
           <td>${escHtml(mName)}${details ? '<br><span style="font-size:0.75rem;color:#555">' + details + '</span>' : ''}</td>
           <td style="text-align:right">
-            <form method="POST" action="/unsubscribe" style="display:inline" onsubmit="return confirm('Remove alert for ${escHtml(s.lifter_name).replace(/'/g, "\\'")}? This also stops following them.')">
-              <input type="hidden" name="email" value="${escHtml(s.email)}">
-              <input type="hidden" name="lifter" value="${escHtml(s.lifter_name)}">
-              <input type="hidden" name="meet" value="${escHtml(s.meet_id)}">
-              <input type="hidden" name="return" value="my-subscriptions">
-              <button type="submit" style="background:none;border:none;color:#DC2626;cursor:pointer;font-size:0.85rem;padding:0.25rem 0.5rem;font-family:'Outfit',sans-serif;">remove</button>
-            </form>
+            <span class="remove-wrap">
+              <button type="button" onclick="this.parentElement.classList.add('confirming')" style="background:none;border:none;color:#DC2626;cursor:pointer;font-size:0.85rem;padding:0.25rem 0.5rem;font-family:'Outfit',sans-serif;" class="remove-btn">remove</button>
+              <span class="confirm-btns" style="display:none;">
+                <button type="button" onclick="removeRow(this)" style="background:none;border:none;color:#4ADE80;cursor:pointer;font-size:1.1rem;padding:0.25rem 0.4rem;" title="Confirm">&#x2713;</button>
+                <button type="button" onclick="this.closest('.remove-wrap').classList.remove('confirming')" style="background:none;border:none;color:#DC2626;cursor:pointer;font-size:1.1rem;padding:0.25rem 0.4rem;" title="Cancel">&#x2717;</button>
+              </span>
+            </span>
           </td>
         </tr>`;
       }).join('');
@@ -1254,7 +1461,20 @@ ${FONT_LINKS}
   </form>
   ${content}
   <a href="/" class="back-link">&larr; Subscribe to a lifter</a>
-</div></body></html>`;
+</div>
+<script>
+function removeRow(btn) {
+  var row = btn.closest('tr');
+  var d = row.dataset;
+  var body = 'email=' + encodeURIComponent(d.email) + '&lifter=' + encodeURIComponent(d.lifter);
+  if (d.meet) body += '&meet=' + encodeURIComponent(d.meet);
+  row.style.opacity = '0.4';
+  fetch(d.action, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body, redirect: 'manual' })
+    .then(function() { row.remove(); })
+    .catch(function() { row.style.opacity = '1'; });
+}
+</script>
+</body></html>`;
 }
 
 // --- HTTP Server ---
@@ -1396,14 +1616,34 @@ ${FONT_LINKS}
 </head><body><div class="card animate-in">
   <span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span>
   <p class="confirm-msg">Remove alert for <strong>${escHtml(lifter)}</strong> at <strong>${escHtml(meetName)}</strong>?<br><span style="font-size:0.85rem;">This also stops auto-subscribing to this lifter in future meets.</span></p>
-  <form method="POST" action="/unsubscribe">
+  <form id="unsub-form" method="POST" action="/unsubscribe">
     <input type="hidden" name="email" value="${escHtml(email)}">
     <input type="hidden" name="lifter" value="${escHtml(lifter)}">
     <input type="hidden" name="meet" value="${escHtml(meet)}">
-    <div class="btn-wrap"><button type="submit" class="btn-danger">YES, UNSUBSCRIBE</button></div>
+    <div class="btn-wrap"><button type="submit" class="btn-danger" id="unsub-btn">YES, UNSUBSCRIBE</button></div>
   </form>
   <a href="/" class="cancel-link">Cancel</a>
-</div></body></html>`;
+</div>
+<script>
+document.getElementById('unsub-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var btn = document.getElementById('unsub-btn');
+  btn.disabled = true;
+  btn.textContent = 'REMOVING...';
+  var fd = new URLSearchParams(new FormData(this));
+  fetch('/unsubscribe', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: fd.toString(), redirect: 'manual' })
+    .then(function() {
+      document.querySelector('.confirm-msg').innerHTML = 'You have been unsubscribed.<br><span style="font-size:0.85rem;">You will no longer be auto-subscribed to this lifter in future meets.</span>';
+      btn.closest('.btn-wrap').remove();
+    })
+    .catch(function() {
+      btn.disabled = false;
+      btn.textContent = 'YES, UNSUBSCRIBE';
+      document.querySelector('.confirm-msg').innerHTML = '<span style="color:#DC2626;">Something went wrong. Please try again.</span>';
+    });
+});
+</script>
+</body></html>`;
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(confirmHtml);
 
@@ -1576,6 +1816,33 @@ ${FONT_LINKS}
     results.sort((a, b) => a.name.localeCompare(b.name));
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(results));
+
+  } else if (req.method === 'GET' && url.pathname === '/recaps') {
+    const videos = await getMeetVideos();
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(recapListHTML(videos));
+
+  } else if (req.method === 'GET' && url.pathname.startsWith('/recap/')) {
+    const recapMeetId = url.pathname.split('/')[2];
+    if (!recapMeetId) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('Missing meet ID');
+    } else {
+      const [video, timestamps] = await Promise.all([
+        getMeetVideo(recapMeetId),
+        getAttemptTimestampsByMeet(recapMeetId),
+      ]);
+      if (!video) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end(`No video linked for meet ${recapMeetId}. Use meet_recap.js --set-video to link a YouTube VOD.`);
+      } else if (timestamps.length === 0) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end(`No attempt timestamps found for meet ${recapMeetId}.`);
+      } else {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(recapHTML(recapMeetId, video.meet_name, video.youtube_video_id, Number(video.stream_start_epoch), timestamps));
+      }
+    }
 
   } else {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
