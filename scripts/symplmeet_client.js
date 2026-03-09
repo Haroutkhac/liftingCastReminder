@@ -51,9 +51,11 @@ const RESULT_MAP = { 1: 'good', 0: null, '-1': 'bad' };
 
 // --- Normalize SymPlmeet data into meetState shape ---
 function normalizeSymPlmeetData(meetId, data, meetState) {
-  const meetInfo = data.meetInfo || {};
-  const results = data.results || {};
-  const liftingOrder = Array.isArray(data.liftingOrderThisRound) ? data.liftingOrderThisRound : [];
+  // API may return stringified JSON for these fields
+  const meetInfo = typeof data.meetInfo === 'string' ? JSON.parse(data.meetInfo) : (data.meetInfo || {});
+  const results = typeof data.results === 'string' ? JSON.parse(data.results) : (data.results || {});
+  const rawLiftingOrder = typeof data.liftingOrderThisRound === 'string' ? JSON.parse(data.liftingOrderThisRound) : data.liftingOrderThisRound;
+  const liftingOrder = Array.isArray(rawLiftingOrder) ? rawLiftingOrder : [];
 
   // Meet doc
   meetState.meet = {
@@ -66,23 +68,46 @@ function normalizeSymPlmeetData(meetId, data, meetState) {
   meetState.attempts = {};
   meetState.platforms = {};
 
-  // Build lifters and attempts from results (grouped by flight)
-  const flights = results.flights || results;
+  // Build lifters and attempts from results
+  // API returns { "A": [lifters], "B": [lifters] } keyed by flight letter,
+  // or older format with flights array or flat lifters array
   const allLifters = [];
 
-  if (Array.isArray(flights)) {
-    for (const flight of flights) {
+  if (Array.isArray(results)) {
+    // Array of flight objects: [{flight, lifters}, ...]
+    for (const flight of results) {
       const flightName = flight.flight || 'A';
       const lifters = flight.lifters || flight.data || [];
       for (const l of lifters) {
         allLifters.push({ ...l, flight: flightName });
       }
     }
-  } else if (typeof flights === 'object') {
-    // Handle case where results is a flat object with lifters array
-    const lifters = flights.lifters || [];
-    for (const l of lifters) {
-      allLifters.push({ ...l, flight: l.flight || 'A' });
+  } else if (typeof results === 'object') {
+    // Check if results is keyed by flight letter: { "A": [...], "B": [...] }
+    const keys = Object.keys(results);
+    const isFlightKeyed = keys.length > 0 && keys.every(k => Array.isArray(results[k]));
+    if (isFlightKeyed) {
+      for (const [flightName, lifters] of Object.entries(results)) {
+        for (const l of lifters) {
+          allLifters.push({ ...l, flight: l.flight || flightName });
+        }
+      }
+    } else {
+      // Fallback: results.flights or results.lifters
+      const flights = results.flights || results;
+      if (Array.isArray(flights)) {
+        for (const flight of flights) {
+          const flightName = flight.flight || 'A';
+          const lifters = flight.lifters || flight.data || [];
+          for (const l of lifters) {
+            allLifters.push({ ...l, flight: flightName });
+          }
+        }
+      } else if (flights.lifters) {
+        for (const l of flights.lifters) {
+          allLifters.push({ ...l, flight: l.flight || 'A' });
+        }
+      }
     }
   }
 
@@ -90,7 +115,7 @@ function normalizeSymPlmeetData(meetId, data, meetState) {
     const lid = `sl-${l.id || l.lifterId}`;
     const lifterObj = {
       _id: lid,
-      name: [l.firstName, l.lastName].filter(Boolean).join(' ') || l.name || 'Unknown',
+      name: [l.firstName || l.firstname, l.lastName || l.lastname].filter(Boolean).join(' ') || l.name || 'Unknown',
       lot: l.lotNumber || l.lot || 999,
       session: 1,
       flight: l.flight || 'A',
@@ -98,11 +123,12 @@ function normalizeSymPlmeetData(meetId, data, meetState) {
     };
 
     // Store pre-computed best lifts if available
-    if (l.bestSquat || l.bestBench || l.bestDeadlift) {
+    const bl = l.bestlifts || l.bestLifts || {};
+    if (bl.squat || bl.bench || bl.deadlift || l.bestSquat || l.bestBench || l.bestDeadlift) {
       lifterObj.bestLifts = {
-        squat: l.bestSquat || 0,
-        bench: l.bestBench || 0,
-        deadlift: l.bestDeadlift || 0,
+        squat: bl.squat || l.bestSquat || 0,
+        bench: bl.bench || l.bestBench || 0,
+        deadlift: bl.deadlift || l.bestDeadlift || 0,
       };
     }
 
@@ -133,20 +159,29 @@ function normalizeSymPlmeetData(meetId, data, meetState) {
   }
 
   // Virtual platform
-  const currentLift = meetInfo.currentLift || {};
+  const rawCurrentLift = typeof data.currentLift === 'string' ? JSON.parse(data.currentLift) : (data.currentLift || meetInfo.currentLift || {});
   let currentAttemptId = null;
 
-  if (currentLift.lifterId) {
-    // Derive current attempt ID from meetInfo.currentLift
-    const liftType = (currentLift.liftType || currentLift.lift || '').toLowerCase();
-    const attemptNum = currentLift.attemptNumber || currentLift.attempt || 1;
+  if (rawCurrentLift.lifterId) {
+    // Parse round field (e.g. "sq1", "bp2", "dl3") or use liftType/attemptNumber
     let prefix = null;
-    if (liftType.includes('squat') || liftType === 'sq') prefix = 'sq';
-    else if (liftType.includes('bench') || liftType === 'bp') prefix = 'bp';
-    else if (liftType.includes('dead') || liftType === 'dl') prefix = 'dl';
+    let attemptNum = rawCurrentLift.attemptNumber || rawCurrentLift.attempt || 1;
+    if (rawCurrentLift.round) {
+      const roundMatch = rawCurrentLift.round.match(/^(sq|bp|dl)(\d)$/);
+      if (roundMatch) {
+        prefix = roundMatch[1];
+        attemptNum = roundMatch[2];
+      }
+    }
+    if (!prefix) {
+      const liftType = (rawCurrentLift.liftType || rawCurrentLift.lift || '').toLowerCase();
+      if (liftType.includes('squat') || liftType === 'sq') prefix = 'sq';
+      else if (liftType.includes('bench') || liftType === 'bp') prefix = 'bp';
+      else if (liftType.includes('dead') || liftType === 'dl') prefix = 'dl';
+    }
 
     if (prefix) {
-      currentAttemptId = `sa-${prefix}${attemptNum}-${currentLift.lifterId}`;
+      currentAttemptId = `sa-${prefix}${attemptNum}-${rawCurrentLift.lifterId}`;
     }
   }
 
