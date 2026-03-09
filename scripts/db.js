@@ -10,6 +10,15 @@ const pool = new Pool({
         process.env.DATABASE_URL?.includes('localhost')) ? false
      : { rejectUnauthorized: false },
   connectionTimeoutMillis: 10000,
+  idleTimeoutMillis: 20000,
+  max: 5,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000,
+});
+
+// Prevent pool errors from crashing the process; stale connections will be replaced
+pool.on('error', (err) => {
+  console.error('[DB] Pool connection error (will reconnect):', err.message);
 });
 
 async function initDB() {
@@ -106,7 +115,20 @@ async function getAllPersistentSubscriptions() {
   return rows;
 }
 
+async function getStats() {
+  const subs = await pool.query('SELECT COUNT(DISTINCT email) as users, COUNT(*) as total FROM subscriptions');
+  let persistent = { rows: [{ users: 0, total: 0 }] };
+  try {
+    persistent = await pool.query('SELECT COUNT(DISTINCT email) as users, COUNT(*) as total FROM persistent_subscriptions');
+  } catch (_) { /* table may not exist */ }
+  return {
+    subscriptions: { uniqueUsers: Number(subs.rows[0].users), totalRows: Number(subs.rows[0].total) },
+    persistentSubscriptions: { uniqueUsers: Number(persistent.rows[0].users), totalRows: Number(persistent.rows[0].total) },
+  };
+}
+
 module.exports = {
   initDB, getSubscriptions, getAllMeetIds, addSubscription, removeSubscription, getSubscriptionsByEmail,
   addPersistentSubscription, removePersistentSubscription, getPersistentSubscriptionsByEmail, getAllPersistentSubscriptions,
+  getStats,
 };
