@@ -29,7 +29,12 @@ function cleanupSentCache() {
 // Run cleanup every 5 minutes
 setInterval(cleanupSentCache, 5 * 60 * 1000).unref();
 
-async function sendOnDeckEmail(toEmail, lifterName, meetName, liftName, position, meetId, subLifterName) {
+function youtubeSearchUrl(meetName) {
+  if (!meetName) return null;
+  return `https://www.youtube.com/results?search_query=${encodeURIComponent(meetName)}&sp=EgJAAQ%3D%3D`;
+}
+
+async function sendOnDeckEmail(toEmail, lifterName, meetName, liftName, position, meetId, subLifterName, details) {
   const dedupKey = `${toEmail}:${meetId}:${lifterName}:${liftName}:${position}`;
   if (recentlySent.has(dedupKey)) return false;
 
@@ -46,6 +51,24 @@ async function sendOnDeckEmail(toEmail, lifterName, meetName, liftName, position
   const unsubLifter = subLifterName || lifterName;
   const unsubLink = `${baseUrl}/unsubscribe?email=${encodeURIComponent(toEmail)}&lifter=${encodeURIComponent(unsubLifter)}&meet=${encodeURIComponent(meetId || '')}`;
 
+  // Build attempt details section
+  const d = details || {};
+  const liftLabel = d.liftName ? d.liftName.charAt(0).toUpperCase() + d.liftName.slice(1) : liftName || 'Unknown';
+  const attemptLine = d.attemptNumber ? `${liftLabel} — Attempt ${d.attemptNumber}` : liftLabel;
+  const weightLine = d.weight ? `<strong>${d.weight} kg</strong>` : '';
+
+  let placeLine = '';
+  if (d.currentPlace) {
+    placeLine = `Currently in <strong>${ordinal(d.currentPlace)} place</strong>`;
+    if (d.projectedPlace && d.projectedPlace !== d.currentPlace) {
+      placeLine += ` — moves to <strong>${ordinal(d.projectedPlace)} place</strong> if successful`;
+    } else if (d.projectedPlace && d.projectedPlace === d.currentPlace) {
+      placeLine += ` — stays in <strong>${ordinal(d.projectedPlace)} place</strong> if successful`;
+    }
+  } else if (d.projectedPlace) {
+    placeLine = `Moves to <strong>${ordinal(d.projectedPlace)} place</strong> if successful`;
+  }
+
   const client = getResend();
   if (!client) {
     console.log(`[EMAIL] Skipping (no RESEND_API_KEY): ${positionLabel} for ${lifterName} -> ${toEmail}`);
@@ -60,7 +83,13 @@ async function sendOnDeckEmail(toEmail, lifterName, meetName, liftName, position
       html: `
         <h2>LiftAlert Notification</h2>
         <p><strong>${lifterName}</strong> is <strong>${positionLabel}</strong>!</p>
-        <p>Meet: ${meetName || 'Unknown'}<br>Lift: ${liftName || 'Unknown'}</p>
+        <table style="margin:12px 0;border-collapse:collapse;">
+          <tr><td style="padding:4px 12px 4px 0;color:#888;">Meet</td><td style="padding:4px 0;">${meetName || 'Unknown'}</td></tr>
+          <tr><td style="padding:4px 12px 4px 0;color:#888;">Lift</td><td style="padding:4px 0;">${attemptLine}</td></tr>
+          ${weightLine ? `<tr><td style="padding:4px 12px 4px 0;color:#888;">Weight</td><td style="padding:4px 0;">${weightLine}</td></tr>` : ''}
+          ${placeLine ? `<tr><td style="padding:4px 12px 4px 0;color:#888;">Standings</td><td style="padding:4px 0;">${placeLine}</td></tr>` : ''}
+        </table>
+        ${youtubeSearchUrl(meetName) ? `<p style="margin:12px 0;"><a href="${youtubeSearchUrl(meetName)}" style="color:#3b82f6;font-weight:600;">Watch Live on YouTube</a></p>` : ''}
         <hr>
         <p style="font-size:12px;color:#888;">
           <a href="${unsubLink}">Unsubscribe from alerts for ${lifterName}</a>
@@ -74,6 +103,12 @@ async function sendOnDeckEmail(toEmail, lifterName, meetName, liftName, position
     console.error(`[EMAIL ERROR] Failed to send to ${toEmail}: ${err.message}`);
     return false;
   }
+}
+
+function ordinal(n) {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
 async function sendSubscriptionConfirmation(toEmail, lifterName, meetName, meetDate, meetId) {
@@ -102,6 +137,7 @@ async function sendSubscriptionConfirmation(toEmail, lifterName, meetName, meetD
           ${meetDate ? `<tr><td style="padding:4px 12px 4px 0;color:#888;">Date</td><td style="padding:4px 0;">${meetDate}</td></tr>` : ''}
         </table>
         <p style="font-size:13px;color:#888;">No action needed — we'll email you automatically when it's almost time for ${lifterName} to lift.</p>
+        ${youtubeSearchUrl(meetName) ? `<p style="margin:12px 0;"><a href="${youtubeSearchUrl(meetName)}" style="color:#3b82f6;font-weight:600;">Watch Live on YouTube</a></p>` : ''}
         <p style="font-size:13px;color:#e6a817;background:#2a2a1a;padding:8px 12px;border-radius:6px;margin:12px 0;"><strong>Important:</strong> Check your spam/junk folder and mark this email as "Not Spam" so you don't miss alerts!</p>
         <hr>
         <p style="font-size:12px;color:#888;">

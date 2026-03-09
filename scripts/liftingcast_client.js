@@ -65,6 +65,18 @@ function parseAttemptId(attemptId) {
 // meets: { [meetId]: { meet, platforms, lifters, divisions, attempts, lastSeq, trackState } }
 const meets = {};
 
+// --- Subscription cache (avoids hitting Postgres on every attempt change) ---
+const subsCache = {};
+const SUBS_CACHE_TTL = 30_000; // 30 seconds
+
+async function getCachedSubscriptions(meetId) {
+  const cached = subsCache[meetId];
+  if (cached && Date.now() - cached.ts < SUBS_CACHE_TTL) return cached.subs;
+  const subs = await getSubscriptions(meetId);
+  subsCache[meetId] = { subs, ts: Date.now() };
+  return subs;
+}
+
 function getMeetState(meetId) {
   if (!meets[meetId]) {
     meets[meetId] = {
@@ -78,6 +90,68 @@ function getMeetState(meetId) {
     };
   }
   return meets[meetId];
+}
+
+// --- Compute lifter's best completed lifts from attempt docs ---
+function computeLifterBests(meetState, lifterId) {
+  const bests = { squat: 0, bench: 0, dead: 0 };
+  for (const attempt of Object.values(meetState.attempts)) {
+    if (attempt.lifterId !== lifterId) continue;
+    if (attempt.result !== 'good') continue;
+    const weight = typeof attempt.weight === 'number' ? attempt.weight : 0;
+    if (attempt.liftName && weight > bests[attempt.liftName]) {
+      bests[attempt.liftName] = weight;
+    }
+  }
+  return bests;
+}
+
+// --- Compute standings for all lifters on a platform ---
+function computeStandings(meetState, platformId) {
+  const platformLifterIds = Object.values(meetState.lifters)
+    .filter(l => l.platformId === platformId)
+    .map(l => l._id);
+
+  const standings = [];
+  for (const lid of platformLifterIds) {
+    const bests = computeLifterBests(meetState, lid);
+    const total = bests.squat + bests.bench + bests.dead;
+    standings.push({ lifterId: lid, total, bests });
+  }
+  // Sort descending by total (higher total = better place)
+  standings.sort((a, b) => b.total - a.total);
+  return standings;
+}
+
+// --- Get place info for a lifter, including projected place if attempt succeeds ---
+function getPlaceInfo(meetState, platformId, lifterId, attemptWeight, liftName) {
+  const standings = computeStandings(meetState, platformId);
+  const totalCompetitors = standings.length;
+
+  // Current place (among lifters with total > 0)
+  const withTotals = standings.filter(s => s.total > 0);
+  const currentIdx = withTotals.findIndex(s => s.lifterId === lifterId);
+  const currentPlace = currentIdx >= 0 ? currentIdx + 1 : null;
+
+  // Projected place if this attempt succeeds
+  let projectedPlace = null;
+  if (attemptWeight && liftName) {
+    const currentBests = computeLifterBests(meetState, lifterId);
+    const projectedBest = Math.max(currentBests[liftName] || 0, attemptWeight);
+    const projectedTotal = (liftName === 'squat' ? projectedBest : currentBests.squat)
+      + (liftName === 'bench' ? projectedBest : currentBests.bench)
+      + (liftName === 'dead' ? projectedBest : currentBests.dead);
+
+    // Count how many other lifters have a higher total
+    let rank = 1;
+    for (const s of standings) {
+      if (s.lifterId === lifterId) continue;
+      if (s.total > projectedTotal) rank++;
+    }
+    projectedPlace = rank;
+  }
+
+  return { currentPlace, projectedPlace, totalCompetitors };
 }
 
 // --- Compute attempt order for a platform ---
@@ -148,9 +222,9 @@ function processDoc(meetId, doc) {
 }
 
 // --- Send email notifications for a lifter match ---
-async function notifySubscribers(meetId, lifterName, liftName, position) {
+async function notifySubscribers(meetId, lifterName, liftName, position, details) {
   try {
-    const subs = await getSubscriptions(meetId);
+    const subs = await getCachedSubscriptions(meetId);
     if (subs.length === 0) return;
     const meetName = getMeetState(meetId).meet?.name || meetId;
     const nameLower = lifterName.toLowerCase();
@@ -158,7 +232,7 @@ async function notifySubscribers(meetId, lifterName, liftName, position) {
     for (const sub of subs) {
       if (nameLower === sub.lifter_name.toLowerCase()) {
         console.log(`[NOTIFY] Match: "${lifterName}" is ${position} — notifying ${sub.email}`);
-        await sendOnDeckEmail(sub.email, lifterName, meetName, liftName, position, meetId, sub.lifter_name);
+        await sendOnDeckEmail(sub.email, lifterName, meetName, liftName, position, meetId, sub.lifter_name, details);
       }
     }
   } catch (err) {
@@ -223,19 +297,41 @@ function checkPlatforms(meetId) {
     // Email notifications for current lifter
     if (currentLifter?.name && !ts.notifiedLifting.has(currentLifter.name)) {
       ts.notifiedLifting.add(currentLifter.name);
-      notifySubscribers(meetId, currentLifter.name, parsed.liftName, 'lifting');
+      const currentAttempt = st.attempts[platform.currentAttemptId];
+      const currentWeight = currentAttempt?.weight || null;
+      const placeInfo = getPlaceInfo(st, platformId, parsed.lifterId, currentWeight, parsed.liftName);
+      notifySubscribers(meetId, currentLifter.name, parsed.liftName, 'lifting', {
+        weight: currentWeight,
+        attemptNumber: parsed.attemptNumber,
+        liftName: parsed.liftName,
+        ...placeInfo,
+      });
     }
 
     // Email notifications for on deck
     if (nextAttempts.length > 0 && nextAttempts[0].lifterName && !ts.notifiedOnDeck.has(nextAttempts[0].lifterName)) {
       ts.notifiedOnDeck.add(nextAttempts[0].lifterName);
-      notifySubscribers(meetId, nextAttempts[0].lifterName, nextAttempts[0].liftName, 'on-deck');
+      const a = nextAttempts[0];
+      const placeInfo = getPlaceInfo(st, platformId, a.lifterId, a.weight, a.liftName);
+      notifySubscribers(meetId, a.lifterName, a.liftName, 'on-deck', {
+        weight: a.weight,
+        attemptNumber: a.attemptNumber,
+        liftName: a.liftName,
+        ...placeInfo,
+      });
     }
 
     // Email notifications for in the hole
     if (nextAttempts.length > 1 && nextAttempts[1].lifterName && !ts.notifiedInTheHole.has(nextAttempts[1].lifterName)) {
       ts.notifiedInTheHole.add(nextAttempts[1].lifterName);
-      notifySubscribers(meetId, nextAttempts[1].lifterName, nextAttempts[1].liftName, 'in-the-hole');
+      const a = nextAttempts[1];
+      const placeInfo = getPlaceInfo(st, platformId, a.lifterId, a.weight, a.liftName);
+      notifySubscribers(meetId, a.lifterName, a.liftName, 'in-the-hole', {
+        weight: a.weight,
+        attemptNumber: a.attemptNumber,
+        liftName: a.liftName,
+        ...placeInfo,
+      });
     }
   }
 }
@@ -585,7 +681,7 @@ const FORM_HTML = `<!DOCTYPE html>
 
       <button type="submit">Subscribe</button>
     </form>
-    <div style="text-align:center;margin-top:1.25rem;"><a href="/my-subscriptions" style="color:#94a3b8;font-size:0.85rem;">Manage my subscriptions</a></div>
+    <div style="text-align:center;margin-top:1.25rem;"><a href="/my-subscriptions" style="color:#94a3b8;font-size:0.85rem;">Manage my subscriptions</a> &middot; <a href="/meets" style="color:#94a3b8;font-size:0.85rem;">Today's meets</a></div>
   </div>
   <script>
     const lifterInput = document.getElementById('lifterInput');
@@ -757,6 +853,48 @@ function unsubHTML(success) {
 </head><body><div class="card"><p>${msg}</p><br><a href="/">Back to LiftAlert</a></div></body></html>`;
 }
 
+function meetsHTML(meetList) {
+  const meetCards = meetList.length === 0
+    ? '<p style="color:#94a3b8;text-align:center;margin:2rem 0;">No meets currently indexed.</p>'
+    : meetList.map(m => {
+      const details = [m.date, m.location].filter(Boolean).map(s => escHtml(s)).join(' &middot; ');
+      const statusColor = m.watching ? '#6ee7b7' : '#fbbf24';
+      const statusText = m.watching ? 'Live' : 'Indexed';
+      const platformRows = m.platforms.map(p => {
+        const current = p.currentLifter
+          ? `<strong>${escHtml(p.currentLifter)}</strong> — ${escHtml(p.liftName || '')} attempt ${escHtml(String(p.attemptNumber || ''))}`
+          : '<span style="color:#64748b;">No current lifter</span>';
+        const next = p.nextUp.length > 0
+          ? p.nextUp.map((n, i) => `<span style="color:#94a3b8;font-size:0.8rem;">${i === 0 ? 'On deck' : 'In hole'}: ${escHtml(n.name)}</span>`).join('<br>')
+          : '';
+        return `<div style="margin-top:0.5rem;padding:0.5rem 0.75rem;background:#0f172a;border-radius:6px;">
+          <div style="font-size:0.8rem;color:#64748b;margin-bottom:0.25rem;">${escHtml(p.name)}</div>
+          <div style="font-size:0.9rem;">${current}</div>
+          ${next ? `<div style="margin-top:0.25rem;">${next}</div>` : ''}
+        </div>`;
+      }).join('');
+      return `<div style="background:#1e293b;border-radius:10px;padding:1.25rem;margin-bottom:1rem;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.25rem;">
+          <h2 style="font-size:1.1rem;margin:0;">${escHtml(m.name)}</h2>
+          <span style="font-size:0.75rem;color:${statusColor};border:1px solid ${statusColor};padding:0.15rem 0.5rem;border-radius:99px;">${statusText}</span>
+        </div>
+        ${details ? `<p style="font-size:0.85rem;color:#64748b;margin-bottom:0.5rem;">${details}</p>` : ''}
+        <p style="font-size:0.85rem;color:#94a3b8;">${m.lifterCount} lifters &middot; ${m.platformCount} platform${m.platformCount !== 1 ? 's' : ''}</p>
+        ${platformRows}
+      </div>`;
+    }).join('');
+
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Today's Meets - LiftAlert</title>
+<style>* { box-sizing: border-box; margin: 0; padding: 0; } body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; padding: 1rem; } .container { max-width: 600px; margin: 0 auto; } h1 { font-size: 1.5rem; margin-bottom: 0.25rem; } .subtitle { color: #94a3b8; margin-bottom: 1.5rem; font-size: 0.9rem; } a { color: #3b82f6; } .nav { margin-bottom: 1.5rem; font-size: 0.85rem; }</style>
+</head><body><div class="container">
+  <div class="nav"><a href="/">&larr; Back to LiftAlert</a></div>
+  <h1>Today's Meets</h1>
+  <p class="subtitle">${meetList.length} meet${meetList.length !== 1 ? 's' : ''} currently indexed</p>
+  ${meetCards}
+</div></body></html>`;
+}
+
 function mySubscriptionsHTML(email, subs) {
   const heading = email ? `Subscriptions for ${escHtml(email)}` : 'My Subscriptions';
   let content = '';
@@ -865,6 +1003,7 @@ const server = http.createServer(async (req, res) => {
 
     try {
       await addSubscription(email, lifter, meet);
+      delete subsCache[meet];
       console.log(`[SUBSCRIBE] ${email} -> "${lifter}" in meet ${meet}`);
       startMeet(meet);
       const meetName = meets[meet]?.meet?.name || meet;
@@ -925,6 +1064,7 @@ const server = http.createServer(async (req, res) => {
 
     try {
       const removed = await removeSubscription(email, lifter, meet);
+      delete subsCache[meet];
       console.log(`[UNSUBSCRIBE] ${email} -> "${lifter}" in meet ${meet} (${removed ? 'removed' : 'not found'})`);
       if (returnTo === 'my-subscriptions') {
         res.writeHead(302, { 'Location': `/my-subscriptions?email=${encodeURIComponent(email)}` });
@@ -976,6 +1116,42 @@ const server = http.createServer(async (req, res) => {
       allMeets[mid] = { meetName: st.meet?.name || mid, platforms: summary };
     }
     res.end(JSON.stringify(allMeets, null, 2));
+
+  } else if (req.method === 'GET' && url.pathname === '/meets') {
+    const meetList = [];
+    for (const [mid, st] of Object.entries(meets)) {
+      const lifterCount = Object.keys(st.lifters).length;
+      const platformCount = Object.keys(st.platforms).length;
+      const meetDoc = st.meet || {};
+      const platformSummaries = [];
+      for (const [pid, platform] of Object.entries(st.platforms)) {
+        const parsed = parseAttemptId(platform.currentAttemptId);
+        const currentLifter = parsed ? st.lifters[parsed.lifterId] : null;
+        const order = computeAttemptOrder(st, pid);
+        const currentIdx = platform.currentAttemptId ? order.findIndex(a => a.attemptId === platform.currentAttemptId) : -1;
+        const nextUp = currentIdx >= 0 ? order.slice(currentIdx + 1, currentIdx + 3) : [];
+        platformSummaries.push({
+          name: platform.name || pid,
+          currentLifter: currentLifter?.name || null,
+          liftName: parsed?.liftName || null,
+          attemptNumber: parsed?.attemptNumber || null,
+          nextUp: nextUp.map(a => ({ name: a.lifterName, lift: a.liftName, attempt: a.attemptNumber })),
+        });
+      }
+      meetList.push({
+        id: mid,
+        name: meetDoc.name || mid,
+        date: meetDoc.date || '',
+        location: meetDoc.location || meetDoc.city || '',
+        lifterCount,
+        platformCount,
+        watching: watchingMeets.has(mid),
+        platforms: platformSummaries,
+      });
+    }
+    meetList.sort((a, b) => a.name.localeCompare(b.name));
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(meetsHTML(meetList));
 
   } else if (req.method === 'GET' && url.pathname === '/api/lifters') {
     const results = [];
