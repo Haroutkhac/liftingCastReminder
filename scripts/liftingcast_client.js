@@ -28,6 +28,8 @@ const http = require('http');
 const https = require('https');
 const { initDB, getSubscriptions, getAllMeetIds, addSubscription, removeSubscription, getSubscriptionsByEmail } = require('./db');
 const { sendOnDeckEmail, sendSubscriptionConfirmation } = require('./email');
+const { getMeetPlatform, loadSymPlmeetMeet, watchSymPlmeet, stopSymPlmeet,
+        stopAllSymPlmeet, discoverTodaysSymPlmeetMeets, normalizeSymPlmeetData } = require('./symplmeet_client');
 
 // --- Parse CLI arguments ---
 const args = {};
@@ -49,8 +51,25 @@ const couchdbBase = process.env.COUCHDB_URL || args['url'] || COUCHDB_BASE;
 const LIFT_MAP = { s: 'squat', b: 'bench', d: 'dead' };
 const LIFT_ORDER = { squat: 0, bench: 1, dead: 2 };
 
+const SYMPLMEET_LIFT_MAP = { sq: 'squat', bp: 'bench', dl: 'dead' };
+
 function parseAttemptId(attemptId) {
-  if (!attemptId || !attemptId.startsWith('a')) return null;
+  if (!attemptId) return null;
+
+  // SymPlmeet format: sa-{sq|bp|dl}{1-3}-{lifterId}
+  if (attemptId.startsWith('sa-')) {
+    const match = attemptId.match(/^sa-(sq|bp|dl)(\d)-(.+)$/);
+    if (!match) return null;
+    return {
+      attemptNumber: match[2],
+      liftName: SYMPLMEET_LIFT_MAP[match[1]],
+      liftInitial: match[1],
+      lifterId: `sl-${match[3]}`,
+    };
+  }
+
+  // LiftingCast format: a{attemptNumber}{s|b|d}-{lifterId}
+  if (!attemptId.startsWith('a')) return null;
   const match = attemptId.match(/^a(\d)([sbd])-(.+)$/);
   if (!match) return null;
   return {
@@ -94,6 +113,12 @@ function getMeetState(meetId) {
 
 // --- Compute lifter's best completed lifts from attempt docs ---
 function computeLifterBests(meetState, lifterId) {
+  // Use pre-computed bests from SymPlmeet if available
+  const lifter = meetState.lifters[lifterId];
+  if (lifter?.bestLifts) {
+    return { squat: lifter.bestLifts.squat || 0, bench: lifter.bestLifts.bench || 0, dead: lifter.bestLifts.deadlift || 0 };
+  }
+
   const bests = { squat: 0, bench: 0, dead: 0 };
   for (const attempt of Object.values(meetState.attempts)) {
     if (attempt.lifterId !== lifterId) continue;
@@ -447,6 +472,7 @@ function parseMeetDate(meetDoc) {
 }
 
 function isMeetReady(meetId) {
+  if (getMeetPlatform(meetId) === 'symplmeet') return true; // always ready
   const st = meets[meetId];
   if (!st || !st.meet) return true; // if we can't tell, assume ready
   const meetDate = parseMeetDate(st.meet);
@@ -499,7 +525,12 @@ async function indexMeet(meetId) {
   if (loadedMeets.has(meetId) && Object.keys(getMeetState(meetId).lifters).length > 0) return;
   pendingMeets.add(meetId);
   try {
-    await loadMeet(meetId);
+    if (getMeetPlatform(meetId) === 'symplmeet') {
+      const st = getMeetState(meetId);
+      await loadSymPlmeetMeet(meetId, st);
+    } else {
+      await loadMeet(meetId);
+    }
     loadedMeets.add(meetId);
   } catch (err) {
     console.error(`[INDEX ERROR] Failed to index ${meetId}: ${err.message}`);
@@ -514,6 +545,9 @@ const watchingMeets = new Set(); // meets with active changes feed
 const pendingMeets = new Set();  // meets currently being loaded (prevents duplicate loads)
 
 async function startMeet(meetId) {
+  if (getMeetPlatform(meetId) === 'symplmeet') {
+    return startSymPlmeetMeet(meetId);
+  }
   // Ensure data is loaded first
   await indexMeet(meetId);
   if (!loadedMeets.has(meetId)) return; // indexMeet failed
@@ -528,12 +562,40 @@ async function startMeet(meetId) {
   }
 }
 
+async function startSymPlmeetMeet(meetId) {
+  if (loadedMeets.has(meetId) && watchingMeets.has(meetId)) return;
+  if (pendingMeets.has(meetId)) return;
+  pendingMeets.add(meetId);
+  try {
+    const st = getMeetState(meetId);
+    await loadSymPlmeetMeet(meetId, st);
+    loadedMeets.add(meetId);
+    if (!watchingMeets.has(meetId)) {
+      checkPlatforms(meetId);
+      watchingMeets.add(meetId);
+      watchSymPlmeet(meetId, (data) => {
+        normalizeSymPlmeetData(meetId, data, getMeetState(meetId));
+        checkPlatforms(meetId);
+      });
+    }
+  } catch (err) {
+    console.error(`[SYMPLMEET ERROR] Failed to load meet ${meetId}: ${err.message}`);
+  } finally {
+    pendingMeets.delete(meetId);
+  }
+}
+
 // For backwards compat with /health endpoint
 const activeMeets = loadedMeets;
 
 // --- Poll for new meets from subscriptions + start watching meets that have reached their date ---
 // Cleans up changes feeds for meets that ended (not today/tomorrow).
+// Track which SymPlmeet meet IDs were in the latest /api/todayMeets response
+let activeSymPlmeetIds = new Set();
+
 function isMeetStale(meetId) {
+  // SymPlmeet meets are stale if they're no longer in /api/todayMeets
+  if (getMeetPlatform(meetId) === 'symplmeet') return !activeSymPlmeetIds.has(meetId);
   const st = meets[meetId];
   if (!st || !st.meet) return false;
   // A meet is stale if its date is before today (not today, not tomorrow)
@@ -541,16 +603,35 @@ function isMeetStale(meetId) {
 }
 
 async function discoverTodaysMeets() {
+  // LiftingCast meets
   const todaysMeetIds = await fetchTodaysMeetIds();
   const newMeets = todaysMeetIds.filter(mid => !loadedMeets.has(mid) && !pendingMeets.has(mid));
   if (newMeets.length > 0) {
-    console.log(`[DISCOVER] Indexing ${newMeets.length} new meets for autocomplete...`);
-    // Load meets in parallel, batched to avoid overwhelming CouchDB
+    console.log(`[DISCOVER] Indexing ${newMeets.length} new LiftingCast meets for autocomplete...`);
     const BATCH_SIZE = 5;
     for (let i = 0; i < newMeets.length; i += BATCH_SIZE) {
       const batch = newMeets.slice(i, i + BATCH_SIZE);
       await Promise.all(batch.map(mid => indexMeet(mid)));
     }
+  }
+
+  // SymPlmeet meets
+  try {
+    const symplMeets = await discoverTodaysSymPlmeetMeets();
+    activeSymPlmeetIds = new Set(symplMeets.map(m => m.id));
+
+    for (const m of symplMeets) {
+      if (pendingMeets.has(m.id)) continue;
+      try {
+        const st = getMeetState(m.id);
+        await loadSymPlmeetMeet(m.id, st);
+        loadedMeets.add(m.id);
+      } catch (err) {
+        console.error(`[DISCOVER] Failed to index SymPlmeet meet ${m.id}: ${err.message}`);
+      }
+    }
+  } catch (err) {
+    console.error(`[DISCOVER] SymPlmeet discovery error: ${err.message}`);
   }
 }
 
@@ -572,6 +653,11 @@ async function pollForNewMeets() {
       const subMeetSet = new Set(meetIds);
       for (const mid of loadedMeets) {
         if (subMeetSet.has(mid) && !watchingMeets.has(mid) && isMeetReady(mid)) {
+          // SymPlmeet meets are handled by startMeet → startSymPlmeetMeet
+          if (getMeetPlatform(mid) === 'symplmeet') {
+            await startMeet(mid);
+            continue;
+          }
           console.log(`[MEET DAY] Meet ${mid} ("${getMeetState(mid).meet?.name}") is starting — re-fetching docs and beginning changes feed`);
           try {
             const dbUrl = `${couchdbBase}/${mid}_readonly`;
@@ -596,6 +682,7 @@ async function pollForNewMeets() {
         if (isMeetStale(mid) && !subMeetIds.has(mid)) {
           console.log(`[CLEANUP] Stopping changes feed for stale meet ${mid} ("${getMeetState(mid).meet?.name}")`);
           watchingMeets.delete(mid);
+          if (getMeetPlatform(mid) === 'symplmeet') stopSymPlmeet(mid);
         }
       }
       // Remove stale indexed meets (frees memory, clears old lifters from autocomplete)
@@ -604,6 +691,7 @@ async function pollForNewMeets() {
           console.log(`[CLEANUP] Removing stale meet ${mid} ("${getMeetState(mid).meet?.name}") from index`);
           loadedMeets.delete(mid);
           watchingMeets.delete(mid);
+          if (getMeetPlatform(mid) === 'symplmeet') stopSymPlmeet(mid);
           delete meets[mid];
         }
       }
@@ -1236,6 +1324,9 @@ function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`\n[SHUTDOWN] Received ${signal}, closing gracefully...`);
+
+  // Disconnect all SymPlmeet sockets
+  stopAllSymPlmeet();
 
   // Stop accepting new connections, let in-flight requests finish
   server.close(() => {
