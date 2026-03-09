@@ -184,6 +184,19 @@ function normalizeSymPlmeetData(meetId, data, meetState) {
     }
   }
 
+  // Build reverse lookup: lifterId (person/account) → id (entry/registration)
+  // currentLift.lifterId and liftingOrder[].lifterId use the person ID,
+  // but our normalized docs key off the entry id (l.id)
+  const lifterIdToEntryId = {};
+  for (const l of allLifters) {
+    if (l.lifterId && l.id) {
+      lifterIdToEntryId[String(l.lifterId)] = String(l.id);
+    }
+  }
+
+  // Resolve a raw lifterId to the entry id used in our normalized attempt IDs
+  const resolveId = (rawId) => lifterIdToEntryId[String(rawId)] || String(rawId);
+
   // Virtual platform
   let rawCurrentLift = typeof data.currentLift === 'string' ? JSON.parse(data.currentLift) : data.currentLift;
   if (!rawCurrentLift) {
@@ -194,14 +207,16 @@ function normalizeSymPlmeetData(meetId, data, meetState) {
 
   const currentParsed = parseLiftEntry(rawCurrentLift);
   if (currentParsed && currentParsed.lifterId) {
-    currentAttemptId = `sa-${currentParsed.prefix}${currentParsed.attemptNum}-${currentParsed.lifterId}`;
+    const entryId = resolveId(currentParsed.lifterId);
+    currentAttemptId = `sa-${currentParsed.prefix}${currentParsed.attemptNum}-${entryId}`;
   }
 
   // If we have a lifting order, use the first entry as current lifter
   if (!currentAttemptId && liftingOrder.length > 0) {
     const firstParsed = parseLiftEntry(liftingOrder[0]);
     if (firstParsed && firstParsed.lifterId) {
-      currentAttemptId = `sa-${firstParsed.prefix}${firstParsed.attemptNum}-${firstParsed.lifterId}`;
+      const entryId = resolveId(firstParsed.lifterId);
+      currentAttemptId = `sa-${firstParsed.prefix}${firstParsed.attemptNum}-${entryId}`;
     }
   }
 
@@ -214,10 +229,23 @@ function normalizeSymPlmeetData(meetId, data, meetState) {
   // Inject lifting order as pre-computed order on the platform
   // (used by computeAttemptOrder when available)
   if (liftingOrder.length > 0) {
+    // Lifting order entries lack a `round` field, so use the round from currentLift
+    const currentRound = rawCurrentLift.round || null; // e.g. "sq2"
     meetState.platforms['sp-default']._liftingOrder = liftingOrder.map(entry => {
+      // liftingOrder entries have both id (entry) and lifterId (person); prefer entry id
+      const entryId = entry.id ? String(entry.id) : resolveId(entry.lifterId);
       const parsed = parseLiftEntry(entry);
-      if (!parsed || !parsed.lifterId) return null;
-      return `sa-${parsed.prefix}${parsed.attemptNum}-${parsed.lifterId}`;
+      if (parsed) {
+        return `sa-${parsed.prefix}${parsed.attemptNum}-${entryId}`;
+      }
+      // Fallback: use currentRound + entry id
+      if (currentRound && entryId) {
+        const match = currentRound.match(/^(sq|bp|dl)(\d)$/);
+        if (match) {
+          return `sa-${match[1]}${match[2]}-${entryId}`;
+        }
+      }
+      return null;
     }).filter(Boolean);
   }
 }
