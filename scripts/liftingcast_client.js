@@ -819,11 +819,13 @@ const FORM_HTML = `<!DOCTYPE html>
     .suggestion-item:hover, .suggestion-item.active { background: #1F1F1F; }
     .suggestion-item .name { color: #F0F0F0; font-size: 0.95rem; }
     .suggestion-item .meet-name { color: #666; font-size: 0.8rem; margin-top: 0.1rem; }
-    .selected-pill { display: none; margin-top: 0.75rem; padding: 0.55rem 0.85rem; background: #1A1A1A; border: 1px solid #252525; border-radius: 8px; align-items: center; justify-content: space-between; }
-    .selected-pill .pill-text { color: #F0F0F0; font-size: 0.88rem; }
-    .selected-pill .pill-text .pill-meet { color: #777; font-size: 0.75rem; }
-    .selected-pill .pill-clear { color: #777; cursor: pointer; font-size: 1.2rem; padding: 0 0.25rem; transition: color 0.2s; }
-    .selected-pill .pill-clear:hover { color: #FCA5A5; }
+    .selected-pills { margin-top: 0.75rem; display: flex; flex-direction: column; gap: 0.4rem; }
+    .pill { padding: 0.45rem 0.75rem; background: #1A1A1A; border: 1px solid #252525; border-radius: 8px; display: flex; align-items: center; justify-content: space-between; }
+    .pill .pill-text { color: #F0F0F0; font-size: 0.85rem; }
+    .pill .pill-meet { color: #777; font-size: 0.72rem; }
+    .pill .pill-clear { color: #777; cursor: pointer; font-size: 1.2rem; padding: 0 0.25rem; transition: color 0.2s; margin-left: 0.5rem; }
+    .pill .pill-clear:hover { color: #FCA5A5; }
+    .pill-count { font-size: 0.75rem; color: #555; margin-top: 0.25rem; text-transform: uppercase; letter-spacing: 0.05em; }
     .no-results { padding: 0.55rem 0.85rem; color: #555; font-size: 0.85rem; }
     .meet-count { text-align: center; margin-top: 1.25rem; font-size: 0.8rem; color: #555; display: none; align-items: center; justify-content: center; gap: 0.4rem; }
     .meet-count .pulse-dot { width: 6px; height: 6px; border-radius: 50%; background: #22C55E; animation: pulse 2s ease-in-out infinite; display: inline-block; }
@@ -843,19 +845,15 @@ const FORM_HTML = `<!DOCTYPE html>
       <label for="email">Email</label>
       <input type="email" id="email" name="email" required placeholder="you@example.com">
 
-      <label for="lifterInput">Lifter Name</label>
+      <label for="lifterInput">Lifter Names</label>
       <div class="autocomplete-wrapper" id="autocompleteWrapper">
         <input type="text" id="lifterInput" placeholder="Start typing a lifter name..." autocomplete="off">
         <div class="suggestions" id="suggestions"></div>
       </div>
-      <p class="help">Select a lifter from the dropdown</p>
+      <p class="help">Select one or more lifters from the dropdown</p>
 
-      <input type="hidden" id="lifterHidden" name="lifter">
-      <input type="hidden" id="meetHidden" name="meet">
-      <div class="selected-pill" id="selectedPill">
-        <span class="pill-text"><span id="pillName"></span><br><span class="pill-meet" id="pillMeet"></span></span>
-        <span class="pill-clear" id="pillClear" title="Clear selection">&times;</span>
-      </div>
+      <div class="selected-pills" id="selectedPills"></div>
+      <div class="pill-count" id="pillCount"></div>
 
       <button type="submit" class="btn-primary">SUBSCRIBE</button>
     </form>
@@ -865,23 +863,17 @@ const FORM_HTML = `<!DOCTYPE html>
   <script>
     const lifterInput = document.getElementById('lifterInput');
     const suggestionsEl = document.getElementById('suggestions');
-    const lifterHidden = document.getElementById('lifterHidden');
-    const meetHidden = document.getElementById('meetHidden');
-    const selectedPill = document.getElementById('selectedPill');
-    const pillName = document.getElementById('pillName');
-    const pillMeet = document.getElementById('pillMeet');
-    const pillClear = document.getElementById('pillClear');
-    const autocompleteWrapper = document.getElementById('autocompleteWrapper');
+    const pillsContainer = document.getElementById('selectedPills');
+    const pillCount = document.getElementById('pillCount');
     const form = document.getElementById('subForm');
 
     let activeIdx = -1;
     let currentResults = [];
     let allLifters = [];
+    let selections = []; // { name, meetId, meetName }
 
-    // Load all lifters once on page load
     fetch('/api/lifters').then(r => r.json()).then(data => {
       allLifters = data;
-      // Show meet count after lifters load
       const meetIds = new Set(data.map(l => l.meetId));
       const count = meetIds.size;
       if (count > 0) {
@@ -891,14 +883,30 @@ const FORM_HTML = `<!DOCTYPE html>
       }
     });
 
-    // Block submit unless a lifter was selected from dropdown
     form.addEventListener('submit', (e) => {
-      if (!lifterHidden.value || !meetHidden.value) {
-        e.preventDefault();
+      e.preventDefault();
+      if (selections.length === 0) {
         lifterInput.focus();
         lifterInput.style.borderColor = '#ef4444';
         setTimeout(() => { lifterInput.style.borderColor = ''; }, 2000);
+        return;
       }
+      const email = document.getElementById('email').value;
+      if (!email) return;
+      const btn = form.querySelector('button[type="submit"]');
+      btn.disabled = true;
+      btn.textContent = 'SUBSCRIBING...';
+      fetch('/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, selections })
+      }).then(r => r.text()).then(html => {
+        document.open(); document.write(html); document.close();
+      }).catch(() => {
+        btn.disabled = false;
+        btn.textContent = 'SUBSCRIBE';
+        alert('Failed to subscribe. Please try again.');
+      });
     });
 
     lifterInput.addEventListener('input', () => {
@@ -930,15 +938,25 @@ const FORM_HTML = `<!DOCTYPE html>
       if (!e.target.closest('.autocomplete-wrapper')) closeSuggestions();
     });
 
-    pillClear.addEventListener('click', clearSelection);
-
-    function clearSelection() {
-      lifterHidden.value = '';
-      meetHidden.value = '';
-      selectedPill.style.display = 'none';
-      autocompleteWrapper.style.display = 'block';
-      lifterInput.value = '';
+    function removeSelection(idx) {
+      selections.splice(idx, 1);
+      renderPills();
       lifterInput.focus();
+    }
+
+    function renderPills() {
+      pillsContainer.innerHTML = selections.map((s, i) =>
+        '<div class="pill">' +
+          '<span class="pill-text">' + escHtml(s.name) + '<br><span class="pill-meet">' + escHtml(s.meetName) + '</span></span>' +
+          '<span class="pill-clear" data-idx="' + i + '" title="Remove">&times;</span>' +
+        '</div>'
+      ).join('');
+      pillsContainer.querySelectorAll('.pill-clear').forEach(el => {
+        el.addEventListener('click', () => removeSelection(parseInt(el.dataset.idx)));
+      });
+      pillCount.textContent = selections.length > 0
+        ? selections.length + ' lifter' + (selections.length !== 1 ? 's' : '') + ' selected'
+        : '';
     }
 
     function updateActive(items) {
@@ -953,14 +971,14 @@ const FORM_HTML = `<!DOCTYPE html>
     }
 
     function selectResult(r) {
-      lifterHidden.value = r.name;
-      meetHidden.value = r.meetId;
-      pillName.textContent = r.name;
-      pillMeet.textContent = r.meetName;
-      selectedPill.style.display = 'flex';
-      autocompleteWrapper.style.display = 'none';
+      const dup = selections.some(s => s.name === r.name && s.meetId === r.meetId);
+      if (!dup) {
+        selections.push({ name: r.name, meetId: r.meetId, meetName: r.meetName });
+        renderPills();
+      }
       lifterInput.value = '';
       closeSuggestions();
+      lifterInput.focus();
     }
 
     function filterSuggestions(q) {
@@ -972,12 +990,13 @@ const FORM_HTML = `<!DOCTYPE html>
         suggestionsEl.style.display = 'block';
         return;
       }
-      suggestionsEl.innerHTML = data.map((r, i) =>
-        '<div class="suggestion-item" data-idx="' + i + '">' +
-          '<div class="name">' + escHtml(r.name) + '</div>' +
+      suggestionsEl.innerHTML = data.map((r, i) => {
+        const already = selections.some(s => s.name === r.name && s.meetId === r.meetId);
+        return '<div class="suggestion-item' + (already ? ' already' : '') + '" data-idx="' + i + '">' +
+          '<div class="name">' + escHtml(r.name) + (already ? ' <span style="color:#555;font-size:0.75rem;">(added)</span>' : '') + '</div>' +
           '<div class="meet-name">' + escHtml(r.meetName) + '</div>' +
-        '</div>'
-      ).join('');
+        '</div>';
+      }).join('');
       suggestionsEl.style.display = 'block';
       suggestionsEl.querySelectorAll('.suggestion-item').forEach(el => {
         el.addEventListener('mousedown', (e) => {
@@ -1063,6 +1082,47 @@ ${FONT_LINKS}
   <div class="subs-heading">YOUR SUBSCRIPTIONS</div>
   <table><thead><tr><th>Lifter</th><th>Meet</th><th></th></tr></thead><tbody>${subsRows}</tbody></table>
   <div class="cta"><a href="/">&larr; Subscribe to another lifter</a></div>
+</div></body></html>`;
+}
+
+function bulkSuccessHTML(email, items, allSubs) {
+  const namesList = items.map(i => `<strong>${escHtml(i.name)}</strong>`).join(', ');
+  const subsRows = allSubs.map(s => {
+    const mName = meets[s.meet_id]?.meet?.name || s.meet_id;
+    const meetDate = meets[s.meet_id]?.meet?.date || '';
+    const meetLocation = meets[s.meet_id]?.meet?.location || meets[s.meet_id]?.meet?.city || '';
+    const details = [escHtml(meetDate), escHtml(meetLocation)].filter(Boolean).join(' &middot; ');
+    const unsubUrl = `/unsubscribe?email=${encodeURIComponent(email)}&lifter=${encodeURIComponent(s.lifter_name)}&meet=${encodeURIComponent(s.meet_id)}`;
+    return `<tr>
+      <td>${escHtml(s.lifter_name)}</td>
+      <td>${escHtml(mName)}${details ? '<br><span style="font-size:0.75rem;color:#555">' + details + '</span>' : ''}</td>
+      <td><a href="${unsubUrl}" style="color:#DC2626;font-size:0.8rem">remove</a></td>
+    </tr>`;
+  }).join('');
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Subscribed! - LiftAlert</title>
+${FONT_LINKS}
+<style>
+  ${SHARED_STYLES}
+  body { display: flex; align-items: center; justify-content: center; padding: 1rem; }
+  .card { max-width: 520px; }
+  .success-heading { font-family: 'Bebas Neue', sans-serif; font-size: 2rem; color: #22C55E; text-align: center; letter-spacing: 0.06em; margin-bottom: 0.5rem; }
+  .confirm-text { color: #999; text-align: center; margin-bottom: 1.5rem; font-size: 0.95rem; }
+  .confirm-text strong { color: #F0F0F0; }
+  .spam-warning { background: #1A1700; border: 1px solid #422006; border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1.75rem; font-size: 0.85rem; color: #F59E0B; text-align: center; }
+  .subs-heading { font-family: 'Bebas Neue', sans-serif; font-size: 1.15rem; color: #777; letter-spacing: 0.06em; margin-bottom: 0.5rem; }
+  .cta { text-align: center; margin-top: 1.5rem; }
+  .cta a { color: #777; font-size: 0.88rem; }
+  .cta a:hover { color: #F0F0F0; }
+</style>
+</head><body><div class="card animate-in">
+  <div style="text-align:center;margin-bottom:1.25rem;"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></div>
+  <div class="success-heading">SUBSCRIBED!</div>
+  <p class="confirm-text">You'll get alerts when ${namesList} ${items.length === 1 ? 'is' : 'are'} on deck.<br><span style="font-size:0.85rem;color:#777;">You'll also be auto-subscribed when they compete in future meets.</span></p>
+  <div class="spam-warning">Check your spam/junk folder and mark our emails as &ldquo;Not Spam&rdquo; to make sure you get alerts on time.</div>
+  <div class="subs-heading">YOUR SUBSCRIPTIONS</div>
+  <table><thead><tr><th>Lifter</th><th>Meet</th><th></th></tr></thead><tbody>${subsRows}</tbody></table>
+  <div class="cta"><a href="/">&larr; Subscribe to more lifters</a></div>
 </div></body></html>`;
 }
 
@@ -1255,7 +1315,7 @@ const server = http.createServer(async (req, res) => {
   } else if (req.method === 'POST' && url.pathname === '/subscribe') {
     let body = '';
     let tooLarge = false;
-    const MAX_BODY = 8192; // 8KB — more than enough for a subscription form
+    const MAX_BODY = 32768;
     for await (const chunk of req) {
       body += chunk;
       if (body.length > MAX_BODY) { tooLarge = true; break; }
@@ -1265,53 +1325,75 @@ const server = http.createServer(async (req, res) => {
       res.end('Request body too large');
       return;
     }
-    const { email, lifter, meet } = parseFormBody(body);
 
-    if (!email || !lifter || !meet) {
+    // Support JSON bulk subscribe or legacy form body
+    const isJSON = (req.headers['content-type'] || '').includes('application/json');
+    let email, items; // items = [{ name, meetId }]
+    if (isJSON) {
+      try {
+        const parsed = JSON.parse(body);
+        email = parsed.email;
+        items = (parsed.selections || []).map(s => ({ name: s.name, meetId: s.meetId }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
+        res.end('Invalid JSON');
+        return;
+      }
+    } else {
+      const form = parseFormBody(body);
+      email = form.email;
+      if (form.lifter && form.meet) items = [{ name: form.lifter, meetId: form.meet }];
+      else items = [];
+    }
+
+    if (!email || items.length === 0) {
       res.writeHead(400, { 'Content-Type': 'text/plain' });
-      res.end('Missing required fields: email, lifter, meet');
+      res.end('Missing required fields: email and at least one lifter selection');
       return;
     }
 
-    // Validate lifter exists in the specified meet
-    const meetState = meets[meet];
-    if (!meetState) {
-      res.writeHead(400, { 'Content-Type': 'text/html' });
-      res.end(errorHTML('Meet not found. Please select a lifter from the dropdown.'));
-      return;
-    }
-    const lifterLower = lifter.toLowerCase();
-    const lifterExists = Object.values(meetState.lifters).some(l => l.name && l.name.toLowerCase() === lifterLower);
-    if (!lifterExists) {
-      res.writeHead(400, { 'Content-Type': 'text/html' });
-      res.end(errorHTML('Lifter not found in this meet. Please select a lifter from the dropdown.'));
-      return;
+    // Validate all selections
+    for (const item of items) {
+      const meetState = meets[item.meetId];
+      if (!meetState) {
+        res.writeHead(400, { 'Content-Type': 'text/html' });
+        res.end(errorHTML(`Meet not found for "${item.name}". Please select lifters from the dropdown.`));
+        return;
+      }
+      const lifterLower = item.name.toLowerCase();
+      const lifterExists = Object.values(meetState.lifters).some(l => l.name && l.name.toLowerCase() === lifterLower);
+      if (!lifterExists) {
+        res.writeHead(400, { 'Content-Type': 'text/html' });
+        res.end(errorHTML(`Lifter "${item.name}" not found in meet. Please select from the dropdown.`));
+        return;
+      }
     }
 
-    const doSubscribe = async () => {
-      await addSubscription(email, lifter, meet);
-      await addPersistentSubscription(email, lifter);
-      delete subsCache[meet];
-      console.log(`[SUBSCRIBE] ${email} -> "${lifter}" in meet ${meet} (+ persistent follow)`);
-      startMeet(meet);
-      const meetName = meets[meet]?.meet?.name || meet;
-      const meetDate = meets[meet]?.meet?.date || '';
-      sendSubscriptionConfirmation(email, lifter, meetName, meetDate, meet);
+    try {
+      for (const item of items) {
+        await addSubscription(email, item.name, item.meetId);
+        await addPersistentSubscription(email, item.name);
+        delete subsCache[item.meetId];
+        console.log(`[SUBSCRIBE] ${email} -> "${item.name}" in meet ${item.meetId} (+ persistent follow)`);
+        startMeet(item.meetId);
+      }
+      // Send one confirmation email for the batch
+      const names = items.map(i => i.name);
+      const firstMeet = items[0].meetId;
+      const meetName = meets[firstMeet]?.meet?.name || firstMeet;
+      const meetDate = meets[firstMeet]?.meet?.date || '';
+      if (items.length === 1) {
+        sendSubscriptionConfirmation(email, names[0], meetName, meetDate, firstMeet);
+      } else {
+        sendSubscriptionConfirmation(email, names.join(', '), meetName, meetDate, firstMeet);
+      }
       const allSubs = await getSubscriptionsByEmail(email);
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(successHTML(lifter, meet, allSubs));
-    };
-    try {
-      await doSubscribe();
+      res.end(bulkSuccessHTML(email, items, allSubs));
     } catch (err) {
-      console.error(`[SUBSCRIBE ERROR] ${err.message} — retrying once...`);
-      try {
-        await doSubscribe();
-      } catch (retryErr) {
-        console.error(`[SUBSCRIBE ERROR] retry failed: ${retryErr.message}`);
-        res.writeHead(500, { 'Content-Type': 'text/plain' });
-        res.end('Failed to subscribe. Please try again.');
-      }
+      console.error(`[SUBSCRIBE ERROR] ${err.message}`);
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Failed to subscribe. Please try again.');
     }
 
   } else if (req.method === 'GET' && url.pathname === '/unsubscribe') {
