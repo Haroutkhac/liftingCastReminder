@@ -53,7 +53,7 @@ const RESULT_MAP = { 1: 'good', 0: null, '-1': 'bad' };
 function normalizeSymPlmeetData(meetId, data, meetState) {
   const meetInfo = data.meetInfo || {};
   const results = data.results || {};
-  const liftingOrder = data.liftingOrderThisRound || [];
+  const liftingOrder = Array.isArray(data.liftingOrderThisRound) ? data.liftingOrderThisRound : [];
 
   // Meet doc
   meetState.meet = {
