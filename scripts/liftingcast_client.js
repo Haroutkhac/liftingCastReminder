@@ -708,6 +708,41 @@ function parseFormBody(body) {
   return Object.fromEntries(params.entries());
 }
 
+// --- Shared HTML design tokens ---
+const FONT_LINKS = '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">';
+
+const SHARED_STYLES = `
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif; background: #0A0A0A; color: #F0F0F0; min-height: 100vh; -webkit-font-smoothing: antialiased; }
+  a { color: #DC2626; text-decoration: none; transition: color 0.2s; }
+  a:hover { color: #EF4444; }
+  .brand { font-family: 'Bebas Neue', sans-serif; font-size: 2.25rem; letter-spacing: 0.06em; line-height: 1; }
+  .brand-lift { color: #DC2626; }
+  .brand-alert { color: #F0F0F0; }
+  .card { background: #141414; border: 1px solid #1F1F1F; border-radius: 14px; padding: 2.25rem; max-width: 440px; width: 92%; position: relative; overflow: hidden; }
+  .card::before { content: ''; position: absolute; top: 0; left: 0; bottom: 0; width: 3px; background: #DC2626; }
+  .subtitle { color: #777; font-size: 0.95rem; margin-top: 0.5rem; font-weight: 300; }
+  label { display: block; font-size: 0.72rem; color: #999; margin-bottom: 0.35rem; margin-top: 1.25rem; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; }
+  input[type="email"], input[type="text"] { width: 100%; padding: 0.7rem 0.85rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 1rem; font-family: 'Outfit', sans-serif; transition: border-color 0.2s, box-shadow 0.2s; }
+  input:focus { outline: none; border-color: #DC2626; box-shadow: 0 0 0 3px rgba(220,38,38,0.1); }
+  .btn-primary { margin-top: 1.5rem; width: 100%; padding: 0.85rem; border: none; border-radius: 8px; background: #DC2626; color: white; font-size: 1.15rem; font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.14em; cursor: pointer; transition: all 0.2s; }
+  .btn-primary:hover { background: #B91C1C; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(220,38,38,0.3); }
+  .btn-primary:active { transform: translateY(0); }
+  .btn-danger { padding: 0.65rem 1.5rem; border: none; border-radius: 8px; background: #DC2626; color: white; font-size: 1rem; font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.1em; cursor: pointer; transition: background 0.2s; }
+  .btn-danger:hover { background: #B91C1C; }
+  .msg { margin-top: 1rem; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.88rem; }
+  .msg.ok { background: #052E16; color: #4ADE80; border: 1px solid #166534; }
+  .msg.err { background: #450A0A; color: #FCA5A5; border: 1px solid #7F1D1D; }
+  h1 { font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.04em; }
+  h2 { font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.04em; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; padding: 0.5rem 0.5rem; color: #666; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; border-bottom: 1px solid #252525; font-weight: 600; }
+  td { padding: 0.5rem 0.5rem; border-bottom: 1px solid #1A1A1A; font-size: 0.88rem; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .animate-in { animation: fadeUp 0.5s ease-out both; }
+`;
+
 // --- HTML subscription form ---
 const FORM_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -715,40 +750,37 @@ const FORM_HTML = `<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>LiftAlert - Get Notified</title>
+  ${FONT_LINKS}
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-    .card { background: #1e293b; border-radius: 12px; padding: 2rem; max-width: 420px; width: 90%; box-shadow: 0 4px 24px rgba(0,0,0,0.3); }
-    h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
-    .subtitle { color: #94a3b8; margin-bottom: 1.5rem; font-size: 0.9rem; }
-    label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.25rem; margin-top: 1rem; }
-    input { width: 100%; padding: 0.6rem 0.75rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: 1rem; }
-    input:focus { outline: none; border-color: #3b82f6; }
-    button { margin-top: 1.5rem; width: 100%; padding: 0.7rem; border: none; border-radius: 6px; background: #3b82f6; color: white; font-size: 1rem; font-weight: 600; cursor: pointer; }
-    button:hover { background: #2563eb; }
-    .help { font-size: 0.75rem; color: #64748b; margin-top: 0.25rem; }
-    .msg { margin-top: 1rem; padding: 0.75rem; border-radius: 6px; font-size: 0.9rem; }
-    .msg.ok { background: #064e3b; color: #6ee7b7; }
-    .msg.err { background: #7f1d1d; color: #fca5a5; }
+    ${SHARED_STYLES}
+    body { display: flex; align-items: center; justify-content: center; padding: 1rem; }
+    .help { font-size: 0.72rem; color: #555; margin-top: 0.35rem; text-transform: uppercase; letter-spacing: 0.05em; }
     .autocomplete-wrapper { position: relative; }
-    .suggestions { position: absolute; top: 100%; left: 0; right: 0; background: #1e293b; border: 1px solid #334155; border-top: none; border-radius: 0 0 6px 6px; max-height: 240px; overflow-y: auto; z-index: 10; display: none; }
-    .suggestion-item { padding: 0.5rem 0.75rem; cursor: pointer; }
-    .suggestion-item:hover, .suggestion-item.active { background: #334155; }
-    .suggestion-item .name { color: #e2e8f0; }
-    .suggestion-item .meet-name { color: #64748b; font-size: 0.8rem; }
-    .selected-meet { font-size: 0.8rem; color: #6ee7b7; margin-top: 0.25rem; display: none; }
-    .selected-pill { display: none; margin-top: 0.75rem; padding: 0.5rem 0.75rem; background: #064e3b; border-radius: 6px; align-items: center; justify-content: space-between; }
-    .selected-pill .pill-text { color: #6ee7b7; font-size: 0.85rem; }
-    .selected-pill .pill-text .pill-meet { color: #94a3b8; font-size: 0.75rem; }
-    .selected-pill .pill-clear { color: #94a3b8; cursor: pointer; font-size: 1.1rem; padding: 0 0.25rem; }
-    .selected-pill .pill-clear:hover { color: #fca5a5; }
-    .no-results { padding: 0.5rem 0.75rem; color: #64748b; font-size: 0.85rem; }
+    .suggestions { position: absolute; top: 100%; left: 0; right: 0; background: #141414; border: 1px solid #252525; border-top: none; border-radius: 0 0 8px 8px; max-height: 240px; overflow-y: auto; z-index: 10; display: none; }
+    .suggestion-item { padding: 0.55rem 0.85rem; cursor: pointer; transition: background 0.15s; }
+    .suggestion-item:hover, .suggestion-item.active { background: #1F1F1F; }
+    .suggestion-item .name { color: #F0F0F0; font-size: 0.95rem; }
+    .suggestion-item .meet-name { color: #666; font-size: 0.8rem; margin-top: 0.1rem; }
+    .selected-pill { display: none; margin-top: 0.75rem; padding: 0.55rem 0.85rem; background: #1A1A1A; border: 1px solid #252525; border-radius: 8px; align-items: center; justify-content: space-between; }
+    .selected-pill .pill-text { color: #F0F0F0; font-size: 0.88rem; }
+    .selected-pill .pill-text .pill-meet { color: #777; font-size: 0.75rem; }
+    .selected-pill .pill-clear { color: #777; cursor: pointer; font-size: 1.2rem; padding: 0 0.25rem; transition: color 0.2s; }
+    .selected-pill .pill-clear:hover { color: #FCA5A5; }
+    .no-results { padding: 0.55rem 0.85rem; color: #555; font-size: 0.85rem; }
+    .meet-count { text-align: center; margin-top: 1.25rem; font-size: 0.8rem; color: #555; display: none; align-items: center; justify-content: center; gap: 0.4rem; }
+    .meet-count .pulse-dot { width: 6px; height: 6px; border-radius: 50%; background: #22C55E; animation: pulse 2s ease-in-out infinite; display: inline-block; }
+    .footer-links { text-align: center; margin-top: 1.25rem; font-size: 0.8rem; }
+    .footer-links a { color: #777; transition: color 0.2s; }
+    .footer-links a:hover { color: #F0F0F0; }
+    .footer-links .sep { color: #333; margin: 0 0.35rem; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1>LiftAlert</h1>
-    <p class="subtitle">Get email alerts when your lifter is on deck.</p>
+  <div class="card animate-in">
+    <div style="margin-bottom: 1.25rem;">
+      <span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span>
+      <p class="subtitle">Never miss a lift.</p>
+    </div>
     <form method="POST" action="/subscribe" id="subForm">
       <label for="email">Email</label>
       <input type="email" id="email" name="email" required placeholder="you@example.com">
@@ -767,9 +799,10 @@ const FORM_HTML = `<!DOCTYPE html>
         <span class="pill-clear" id="pillClear" title="Clear selection">&times;</span>
       </div>
 
-      <button type="submit">Subscribe</button>
+      <button type="submit" class="btn-primary">SUBSCRIBE</button>
     </form>
-    <div style="text-align:center;margin-top:1.25rem;"><a href="/my-subscriptions" style="color:#94a3b8;font-size:0.85rem;">Manage my subscriptions</a> &middot; <a href="/meets" style="color:#94a3b8;font-size:0.85rem;">Today's meets</a></div>
+    <div class="meet-count" id="meetCount"><span class="pulse-dot"></span> <span id="meetCountText"></span></div>
+    <div class="footer-links"><a href="/my-subscriptions">My subscriptions</a><span class="sep">&middot;</span><a href="/meets">Today&rsquo;s meets</a></div>
   </div>
   <script>
     const lifterInput = document.getElementById('lifterInput');
@@ -788,7 +821,17 @@ const FORM_HTML = `<!DOCTYPE html>
     let allLifters = [];
 
     // Load all lifters once on page load
-    fetch('/api/lifters').then(r => r.json()).then(data => { allLifters = data; });
+    fetch('/api/lifters').then(r => r.json()).then(data => {
+      allLifters = data;
+      // Show meet count after lifters load
+      const meetIds = new Set(data.map(l => l.meetId));
+      const count = meetIds.size;
+      if (count > 0) {
+        const el = document.getElementById('meetCount');
+        document.getElementById('meetCountText').textContent = 'Monitoring ' + count + ' meet' + (count !== 1 ? 's' : '');
+        el.style.display = 'flex';
+      }
+    });
 
     // Block submit unless a lifter was selected from dropdown
     form.addEventListener('submit', (e) => {
@@ -906,9 +949,20 @@ function escHtml(str) {
 
 function errorHTML(msg) {
   return `<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Error</title>
-<style>* { box-sizing: border-box; margin: 0; padding: 0; } body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; } .card { background: #1e293b; border-radius: 12px; padding: 2rem; max-width: 420px; width: 90%; text-align: center; } h1 { color: #fca5a5; margin-bottom: 0.5rem; } p { color: #94a3b8; } a { color: #3b82f6; }</style>
-</head><body><div class="card"><h1>Error</h1><p>${msg}</p><br><a href="/">Go back</a></div></body></html>`;
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Error - LiftAlert</title>
+${FONT_LINKS}
+<style>
+  ${SHARED_STYLES}
+  body { display: flex; align-items: center; justify-content: center; padding: 1rem; }
+  .error-msg { margin-top: 1.25rem; padding: 1rem; background: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px; color: #FCA5A5; font-size: 0.95rem; text-align: center; }
+  .back-link { display: block; text-align: center; margin-top: 1.5rem; color: #777; font-size: 0.88rem; }
+  .back-link:hover { color: #F0F0F0; }
+</style>
+</head><body><div class="card animate-in">
+  <span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span>
+  <div class="error-msg">${msg}</div>
+  <a href="/" class="back-link">&larr; Go back</a>
+</div></body></html>`;
 }
 
 function successHTML(lifter, meetId, allSubs) {
@@ -921,64 +975,108 @@ function successHTML(lifter, meetId, allSubs) {
     const details = [escHtml(meetDate), escHtml(meetLocation)].filter(Boolean).join(' &middot; ');
     const unsubUrl = `/unsubscribe?email=${encodeURIComponent(s.email || '')}&lifter=${encodeURIComponent(s.lifter_name)}&meet=${encodeURIComponent(s.meet_id)}`;
     return `<tr>
-      <td style="padding:0.4rem 0.5rem">${escHtml(s.lifter_name)}</td>
-      <td style="padding:0.4rem 0.5rem">${escHtml(mName)}${details ? '<br><span style="font-size:0.75rem;color:#64748b">' + details + '</span>' : ''}</td>
-      <td style="padding:0.4rem 0.5rem"><a href="${unsubUrl}" style="color:#f87171;font-size:0.8rem">remove</a></td>
+      <td>${escHtml(s.lifter_name)}</td>
+      <td>${escHtml(mName)}${details ? '<br><span style="font-size:0.75rem;color:#555">' + details + '</span>' : ''}</td>
+      <td><a href="${unsubUrl}" style="color:#DC2626;font-size:0.8rem">remove</a></td>
     </tr>`;
   }).join('');
 
   return `<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Subscribed!</title>
-<style>* { box-sizing: border-box; margin: 0; padding: 0; } body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem; } .card { background: #1e293b; border-radius: 12px; padding: 2rem; max-width: 520px; width: 100%; } h1 { color: #6ee7b7; margin-bottom: 0.5rem; text-align: center; } .subtitle { color: #94a3b8; text-align: center; margin-bottom: 1.5rem; } a { color: #3b82f6; } h2 { font-size: 1rem; color: #94a3b8; margin-bottom: 0.5rem; } table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; } th { text-align: left; padding: 0.4rem 0.5rem; color: #64748b; font-size: 0.75rem; border-bottom: 1px solid #334155; } td { border-bottom: 1px solid #1e293b; font-size: 0.85rem; } .cta { text-align: center; margin-top: 1rem; }</style>
-</head><body><div class="card"><h1>Subscribed!</h1><p class="subtitle">You'll get an email when <strong>${escHtml(lifter)}</strong> is on deck at <strong>${escHtml(meetName)}</strong>.</p><div style="background:#1a1a2e;border:1px solid #334155;border-radius:8px;padding:0.75rem 1rem;margin-bottom:1.5rem;font-size:0.85rem;color:#fbbf24;text-align:center;">Check your spam/junk folder and mark our emails as "Not Spam" to make sure you get alerts on time.</div><h2>Your Subscriptions</h2><table><thead><tr><th>Lifter</th><th>Meet</th><th></th></tr></thead><tbody>${subsRows}</tbody></table><div class="cta"><a href="/">Subscribe to another lifter</a></div></div></body></html>`;
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Subscribed! - LiftAlert</title>
+${FONT_LINKS}
+<style>
+  ${SHARED_STYLES}
+  body { display: flex; align-items: center; justify-content: center; padding: 1rem; }
+  .card { max-width: 520px; }
+  .success-heading { font-family: 'Bebas Neue', sans-serif; font-size: 2rem; color: #22C55E; text-align: center; letter-spacing: 0.06em; margin-bottom: 0.5rem; }
+  .confirm-text { color: #999; text-align: center; margin-bottom: 1.5rem; font-size: 0.95rem; }
+  .confirm-text strong { color: #F0F0F0; }
+  .spam-warning { background: #1A1700; border: 1px solid #422006; border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1.75rem; font-size: 0.85rem; color: #F59E0B; text-align: center; }
+  .subs-heading { font-family: 'Bebas Neue', sans-serif; font-size: 1.15rem; color: #777; letter-spacing: 0.06em; margin-bottom: 0.5rem; }
+  .cta { text-align: center; margin-top: 1.5rem; }
+  .cta a { color: #777; font-size: 0.88rem; }
+  .cta a:hover { color: #F0F0F0; }
+</style>
+</head><body><div class="card animate-in">
+  <div style="text-align:center;margin-bottom:1.25rem;"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></div>
+  <div class="success-heading">SUBSCRIBED!</div>
+  <p class="confirm-text">You'll get an email when <strong>${escHtml(lifter)}</strong> is on deck at <strong>${escHtml(meetName)}</strong>.</p>
+  <div class="spam-warning">Check your spam/junk folder and mark our emails as &ldquo;Not Spam&rdquo; to make sure you get alerts on time.</div>
+  <div class="subs-heading">YOUR SUBSCRIPTIONS</div>
+  <table><thead><tr><th>Lifter</th><th>Meet</th><th></th></tr></thead><tbody>${subsRows}</tbody></table>
+  <div class="cta"><a href="/">&larr; Subscribe to another lifter</a></div>
+</div></body></html>`;
 }
 
 function unsubHTML(success) {
   const msg = success ? 'You have been unsubscribed.' : 'Subscription not found (may already be removed).';
   return `<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Unsubscribed</title>
-<style>* { box-sizing: border-box; margin: 0; padding: 0; } body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; } .card { background: #1e293b; border-radius: 12px; padding: 2rem; max-width: 420px; width: 90%; text-align: center; } p { color: #94a3b8; } a { color: #3b82f6; }</style>
-</head><body><div class="card"><p>${msg}</p><br><a href="/">Back to LiftAlert</a></div></body></html>`;
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Unsubscribed - LiftAlert</title>
+${FONT_LINKS}
+<style>
+  ${SHARED_STYLES}
+  body { display: flex; align-items: center; justify-content: center; padding: 1rem; }
+  .unsub-msg { color: #999; text-align: center; margin-top: 1.25rem; font-size: 0.95rem; }
+  .back-link { display: block; text-align: center; margin-top: 1.5rem; color: #777; font-size: 0.88rem; }
+  .back-link:hover { color: #F0F0F0; }
+</style>
+</head><body><div class="card animate-in">
+  <span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span>
+  <p class="unsub-msg">${msg}</p>
+  <a href="/" class="back-link">&larr; Back to LiftAlert</a>
+</div></body></html>`;
 }
 
 function meetsHTML(meetList) {
   const meetCards = meetList.length === 0
-    ? '<p style="color:#94a3b8;text-align:center;margin:2rem 0;">No meets currently indexed.</p>'
+    ? '<p style="color:#555;text-align:center;margin:2rem 0;">No meets currently indexed.</p>'
     : meetList.map(m => {
       const details = [m.date, m.location].filter(Boolean).map(s => escHtml(s)).join(' &middot; ');
-      const statusColor = m.watching ? '#6ee7b7' : '#fbbf24';
-      const statusText = m.watching ? 'Live' : 'Indexed';
+      const isLive = m.watching;
+      const statusBadge = isLive
+        ? '<span style="font-size:0.72rem;color:#22C55E;border:1px solid #166534;padding:0.15rem 0.55rem;border-radius:99px;display:inline-flex;align-items:center;gap:0.3rem;"><span style="width:5px;height:5px;border-radius:50%;background:#22C55E;animation:pulse 2s ease-in-out infinite;display:inline-block;"></span>Live</span>'
+        : '<span style="font-size:0.72rem;color:#F59E0B;border:1px solid #422006;padding:0.15rem 0.55rem;border-radius:99px;">Indexed</span>';
       const platformRows = m.platforms.map(p => {
         const current = p.currentLifter
-          ? `<strong>${escHtml(p.currentLifter)}</strong> — ${escHtml(p.liftName || '')} attempt ${escHtml(String(p.attemptNumber || ''))}`
-          : '<span style="color:#64748b;">No current lifter</span>';
+          ? `<strong style="color:#F0F0F0;">${escHtml(p.currentLifter)}</strong> <span style="color:#777;">&mdash; ${escHtml(p.liftName || '')} attempt ${escHtml(String(p.attemptNumber || ''))}</span>`
+          : '<span style="color:#555;">No current lifter</span>';
         const next = p.nextUp.length > 0
-          ? p.nextUp.map((n, i) => `<span style="color:#94a3b8;font-size:0.8rem;">${i === 0 ? 'On deck' : 'In hole'}: ${escHtml(n.name)}</span>`).join('<br>')
+          ? p.nextUp.map((n, i) => `<span style="color:#777;font-size:0.8rem;">${i === 0 ? 'On deck' : 'In hole'}: <span style="color:#999;">${escHtml(n.name)}</span></span>`).join('<br>')
           : '';
-        return `<div style="margin-top:0.5rem;padding:0.5rem 0.75rem;background:#0f172a;border-radius:6px;">
-          <div style="font-size:0.8rem;color:#64748b;margin-bottom:0.25rem;">${escHtml(p.name)}</div>
+        return `<div style="margin-top:0.5rem;padding:0.55rem 0.85rem;background:#0A0A0A;border:1px solid #1F1F1F;border-radius:8px;">
+          <div style="font-size:0.72rem;color:#666;margin-bottom:0.25rem;text-transform:uppercase;letter-spacing:0.05em;">${escHtml(p.name)}</div>
           <div style="font-size:0.9rem;">${current}</div>
-          ${next ? `<div style="margin-top:0.25rem;">${next}</div>` : ''}
+          ${next ? `<div style="margin-top:0.3rem;">${next}</div>` : ''}
         </div>`;
       }).join('');
-      return `<div style="background:#1e293b;border-radius:10px;padding:1.25rem;margin-bottom:1rem;">
+      return `<div style="background:#141414;border:1px solid #1F1F1F;border-radius:12px;padding:1.25rem;margin-bottom:1rem;position:relative;overflow:hidden;">
+        <div style="position:absolute;top:0;left:0;bottom:0;width:3px;background:#DC2626;"></div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.25rem;">
-          <h2 style="font-size:1.1rem;margin:0;">${escHtml(m.name)}</h2>
-          <span style="font-size:0.75rem;color:${statusColor};border:1px solid ${statusColor};padding:0.15rem 0.5rem;border-radius:99px;">${statusText}</span>
+          <h2 style="font-size:1.15rem;margin:0;">${escHtml(m.name)}</h2>
+          ${statusBadge}
         </div>
-        ${details ? `<p style="font-size:0.85rem;color:#64748b;margin-bottom:0.5rem;">${details}</p>` : ''}
-        <p style="font-size:0.85rem;color:#94a3b8;">${m.lifterCount} lifters &middot; ${m.platformCount} platform${m.platformCount !== 1 ? 's' : ''}</p>
+        ${details ? `<p style="font-size:0.85rem;color:#555;margin-bottom:0.5rem;">${details}</p>` : ''}
+        <p style="font-size:0.85rem;color:#777;">${m.lifterCount} lifters &middot; ${m.platformCount} platform${m.platformCount !== 1 ? 's' : ''}</p>
         ${platformRows}
       </div>`;
     }).join('');
 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Today's Meets - LiftAlert</title>
-<style>* { box-sizing: border-box; margin: 0; padding: 0; } body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; padding: 1rem; } .container { max-width: 600px; margin: 0 auto; } h1 { font-size: 1.5rem; margin-bottom: 0.25rem; } .subtitle { color: #94a3b8; margin-bottom: 1.5rem; font-size: 0.9rem; } a { color: #3b82f6; } .nav { margin-bottom: 1.5rem; font-size: 0.85rem; }</style>
-</head><body><div class="container">
-  <div class="nav"><a href="/">&larr; Back to LiftAlert</a></div>
-  <h1>Today's Meets</h1>
-  <p class="subtitle">${meetList.length} meet${meetList.length !== 1 ? 's' : ''} currently indexed</p>
+${FONT_LINKS}
+<style>
+  ${SHARED_STYLES}
+  body { padding: 1.5rem 1rem; }
+  .container { max-width: 600px; margin: 0 auto; }
+  .nav { margin-bottom: 1.5rem; font-size: 0.85rem; }
+  .nav a { color: #777; }
+  .nav a:hover { color: #F0F0F0; }
+  .page-heading { font-family: 'Bebas Neue', sans-serif; font-size: 1.75rem; letter-spacing: 0.06em; margin-bottom: 0.25rem; }
+</style>
+</head><body><div class="container animate-in">
+  <div class="nav"><a href="/">&larr; Back to <span class="brand" style="font-size:1rem;"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
+  <div class="page-heading">TODAY'S MEETS</div>
+  <p class="subtitle" style="margin-bottom:1.5rem;">${meetList.length} meet${meetList.length !== 1 ? 's' : ''} currently indexed</p>
   ${meetCards}
 </div></body></html>`;
 }
@@ -987,7 +1085,7 @@ function mySubscriptionsHTML(email, subs) {
   const heading = email ? `Subscriptions for ${escHtml(email)}` : 'My Subscriptions';
   let content = '';
   if (email && subs.length === 0) {
-    content = `<p style="color:#94a3b8;text-align:center;margin:1.5rem 0;">No subscriptions found for this email.</p>`;
+    content = `<p style="color:#555;text-align:center;margin:1.5rem 0;">No subscriptions found for this email.</p>`;
   } else if (email) {
     const rows = subs.map(s => {
       const mName = meets[s.meet_id]?.meet?.name || s.meet_id;
@@ -995,37 +1093,46 @@ function mySubscriptionsHTML(email, subs) {
       const meetLocation = meets[s.meet_id]?.meet?.location || meets[s.meet_id]?.meet?.city || '';
       const details = [escHtml(meetDate), escHtml(meetLocation)].filter(Boolean).join(' &middot; ');
       return `<tr>
-        <td style="padding:0.5rem 0.5rem">${escHtml(s.lifter_name)}</td>
-        <td style="padding:0.5rem 0.5rem">${escHtml(mName)}${details ? '<br><span style="font-size:0.75rem;color:#64748b">' + details + '</span>' : ''}</td>
-        <td style="padding:0.5rem 0.5rem;text-align:right">
+        <td>${escHtml(s.lifter_name)}</td>
+        <td>${escHtml(mName)}${details ? '<br><span style="font-size:0.75rem;color:#555">' + details + '</span>' : ''}</td>
+        <td style="text-align:right">
           <form method="POST" action="/unsubscribe" style="display:inline" onsubmit="return confirm('Remove alert for ${escHtml(s.lifter_name).replace(/'/g, "\\'")}?')">
             <input type="hidden" name="email" value="${escHtml(s.email)}">
             <input type="hidden" name="lifter" value="${escHtml(s.lifter_name)}">
             <input type="hidden" name="meet" value="${escHtml(s.meet_id)}">
             <input type="hidden" name="return" value="my-subscriptions">
-            <button type="submit" style="background:none;border:none;color:#f87171;cursor:pointer;font-size:0.85rem;padding:0.25rem 0.5rem;">remove</button>
+            <button type="submit" style="background:none;border:none;color:#DC2626;cursor:pointer;font-size:0.85rem;padding:0.25rem 0.5rem;font-family:'Outfit',sans-serif;">remove</button>
           </form>
         </td>
       </tr>`;
     }).join('');
-    content = `<table style="width:100%;border-collapse:collapse;margin-top:1rem;">
-      <thead><tr><th style="text-align:left;padding:0.4rem 0.5rem;color:#64748b;font-size:0.75rem;border-bottom:1px solid #334155;">Lifter</th><th style="text-align:left;padding:0.4rem 0.5rem;color:#64748b;font-size:0.75rem;border-bottom:1px solid #334155;">Meet</th><th></th></tr></thead>
+    content = `<table style="margin-top:1.25rem;">
+      <thead><tr><th>Lifter</th><th>Meet</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
   }
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>My Subscriptions - LiftAlert</title>
-<style>* { box-sizing: border-box; margin: 0; padding: 0; } body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem; } .card { background: #1e293b; border-radius: 12px; padding: 2rem; max-width: 520px; width: 100%; box-shadow: 0 4px 24px rgba(0,0,0,0.3); } h1 { font-size: 1.5rem; margin-bottom: 0.25rem; } .subtitle { color: #94a3b8; margin-bottom: 1.5rem; font-size: 0.9rem; } label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.25rem; } input { width: 100%; padding: 0.6rem 0.75rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: 1rem; } input:focus { outline: none; border-color: #3b82f6; } button { margin-top: 1rem; width: 100%; padding: 0.7rem; border: none; border-radius: 6px; background: #3b82f6; color: white; font-size: 1rem; font-weight: 600; cursor: pointer; } button:hover { background: #2563eb; } a { color: #3b82f6; } table td { border-bottom: 1px solid #334155; font-size: 0.85rem; }</style>
-</head><body><div class="card">
-  <h1>${heading}</h1>
+${FONT_LINKS}
+<style>
+  ${SHARED_STYLES}
+  body { display: flex; align-items: center; justify-content: center; padding: 1rem; }
+  .card { max-width: 520px; }
+  .page-heading { font-family: 'Bebas Neue', sans-serif; font-size: 1.5rem; letter-spacing: 0.04em; margin-top: 1rem; }
+  .back-link { display: block; text-align: center; margin-top: 1.5rem; color: #777; font-size: 0.88rem; }
+  .back-link:hover { color: #F0F0F0; }
+</style>
+</head><body><div class="card animate-in">
+  <span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span>
+  <div class="page-heading">${heading}</div>
   <p class="subtitle">View and manage your LiftAlert subscriptions.</p>
   <form method="GET" action="/my-subscriptions">
     <label for="email">Email</label>
     <input type="email" id="email" name="email" required placeholder="you@example.com" value="${email ? escHtml(email) : ''}">
-    <button type="submit">Look up</button>
+    <button type="submit" class="btn-primary">LOOK UP</button>
   </form>
   ${content}
-  <div style="text-align:center;margin-top:1.25rem;"><a href="/" style="color:#94a3b8;font-size:0.85rem;">Subscribe to a lifter</a></div>
+  <a href="/" class="back-link">&larr; Subscribe to a lifter</a>
 </div></body></html>`;
 }
 
@@ -1119,17 +1226,27 @@ const server = http.createServer(async (req, res) => {
 
     const meetName = meets[meet]?.meet?.name || meet;
     const confirmHtml = `<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Unsubscribe</title>
-<style>* { box-sizing: border-box; margin: 0; padding: 0; } body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; } .card { background: #1e293b; border-radius: 12px; padding: 2rem; max-width: 420px; width: 90%; text-align: center; } p { color: #94a3b8; margin-bottom: 1.5rem; } button { padding: 0.6rem 1.5rem; border: none; border-radius: 6px; background: #ef4444; color: white; font-size: 1rem; cursor: pointer; } a { color: #3b82f6; display: block; margin-top: 1rem; }</style>
-</head><body><div class="card">
-  <p>Remove alert for <strong style="color:#e2e8f0">${escHtml(lifter)}</strong> at <strong style="color:#e2e8f0">${escHtml(meetName)}</strong>?</p>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Unsubscribe - LiftAlert</title>
+${FONT_LINKS}
+<style>
+  ${SHARED_STYLES}
+  body { display: flex; align-items: center; justify-content: center; padding: 1rem; }
+  .confirm-msg { color: #999; text-align: center; margin-top: 1.25rem; margin-bottom: 1.5rem; font-size: 0.95rem; }
+  .confirm-msg strong { color: #F0F0F0; }
+  .btn-wrap { text-align: center; }
+  .cancel-link { display: block; text-align: center; margin-top: 1rem; color: #777; font-size: 0.88rem; }
+  .cancel-link:hover { color: #F0F0F0; }
+</style>
+</head><body><div class="card animate-in">
+  <span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span>
+  <p class="confirm-msg">Remove alert for <strong>${escHtml(lifter)}</strong> at <strong>${escHtml(meetName)}</strong>?</p>
   <form method="POST" action="/unsubscribe">
     <input type="hidden" name="email" value="${escHtml(email)}">
     <input type="hidden" name="lifter" value="${escHtml(lifter)}">
     <input type="hidden" name="meet" value="${escHtml(meet)}">
-    <button type="submit">Yes, unsubscribe</button>
+    <div class="btn-wrap"><button type="submit" class="btn-danger">YES, UNSUBSCRIBE</button></div>
   </form>
-  <a href="/">Cancel</a>
+  <a href="/" class="cancel-link">Cancel</a>
 </div></body></html>`;
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(confirmHtml);
