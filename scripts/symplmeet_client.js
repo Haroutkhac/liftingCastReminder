@@ -283,18 +283,18 @@ function stopAllSymPlmeet() {
   }
 }
 
-// --- Discover today's meets ---
+// --- Discover all open meets ---
 async function discoverTodaysSymPlmeetMeets() {
   try {
     const data = await symplmeetFetchJSON('/api/todayMeets');
     const meets = Array.isArray(data) ? data : [];
-    console.log(`[SYMPLMEET] Discovered ${meets.length} today's meets`);
+    console.log(`[SYMPLMEET] Discovered ${meets.length} open meets`);
     return meets.map(m => ({
       id: String(m.id || m.meetId),
       name: m.meetName || m.name || m.title || `SymPlmeet #${m.id || m.meetId}`,
     }));
   } catch (err) {
-    console.error(`[SYMPLMEET] Failed to discover today's meets: ${err.message}`);
+    console.error(`[SYMPLMEET] Failed to discover open meets: ${err.message}`);
     return [];
   }
 }

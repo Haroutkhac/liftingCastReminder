@@ -27,7 +27,8 @@
 const http = require('http');
 const https = require('https');
 const { initDB, getSubscriptions, getAllMeetIds, addSubscription, removeSubscription, getSubscriptionsByEmail,
-        addPersistentSubscription, removePersistentSubscription, getPersistentSubscriptionsByEmail, getAllPersistentSubscriptions } = require('./db');
+        addPersistentSubscription, removePersistentSubscription, getPersistentSubscriptionsByEmail, getAllPersistentSubscriptions,
+        getStats } = require('./db');
 const { sendOnDeckEmail, sendSubscriptionConfirmation, sendAutoSubscribeNotification } = require('./email');
 const { getMeetPlatform, loadSymPlmeetMeet, watchSymPlmeet, stopSymPlmeet,
         stopAllSymPlmeet, discoverTodaysSymPlmeetMeets, normalizeSymPlmeetData } = require('./symplmeet_client');
@@ -665,19 +666,26 @@ async function discoverTodaysMeets() {
     }
   }
 
-  // SymPlmeet meets
+  // SymPlmeet meets (API returns all open/non-completed meets)
   try {
     const symplMeets = await discoverTodaysSymPlmeetMeets();
     activeSymPlmeetIds = new Set(symplMeets.map(m => m.id));
 
+    // Pre-set discovered names so indexMeet → loadSymPlmeetMeet has them as fallback
     for (const m of symplMeets) {
-      if (pendingMeets.has(m.id)) continue;
-      try {
-        const st = getMeetState(m.id);
-        await loadSymPlmeetMeet(m.id, st, m.name);
-        loadedMeets.add(m.id);
-      } catch (err) {
-        console.error(`[DISCOVER] Failed to index SymPlmeet meet ${m.id}: ${err.message}`);
+      const st = getMeetState(m.id);
+      if (!st.meet || st.meet.name === `SymPlmeet #${m.id}`) {
+        st.meet = { _id: String(m.id), name: m.name };
+      }
+    }
+
+    const newSymplMeets = symplMeets.filter(m => !loadedMeets.has(m.id) && !pendingMeets.has(m.id));
+    if (newSymplMeets.length > 0) {
+      console.log(`[DISCOVER] Indexing ${newSymplMeets.length} new SymPlmeet meets for autocomplete...`);
+      const BATCH_SIZE = 5;
+      for (let i = 0; i < newSymplMeets.length; i += BATCH_SIZE) {
+        const batch = newSymplMeets.slice(i, i + BATCH_SIZE);
+        await Promise.all(batch.map(m => indexMeet(m.id)));
       }
     }
   } catch (err) {
@@ -1082,10 +1090,9 @@ function meetsHTML(meetList) {
     ? '<p style="color:#555;text-align:center;margin:2rem 0;">No meets currently indexed.</p>'
     : meetList.map(m => {
       const details = [m.date, m.location].filter(Boolean).map(s => escHtml(s)).join(' &middot; ');
-      const isLive = m.watching;
-      const statusBadge = isLive
+      const statusBadge = m.watching
         ? '<span style="font-size:0.72rem;color:#22C55E;border:1px solid #166534;padding:0.15rem 0.55rem;border-radius:99px;display:inline-flex;align-items:center;gap:0.3rem;"><span style="width:5px;height:5px;border-radius:50%;background:#22C55E;animation:pulse 2s ease-in-out infinite;display:inline-block;"></span>Live</span>'
-        : '<span style="font-size:0.72rem;color:#F59E0B;border:1px solid #422006;padding:0.15rem 0.55rem;border-radius:99px;">Indexed</span>';
+        : '';
       const platformRows = m.platforms.map(p => {
         const current = p.currentLifter
           ? `<strong style="color:#F0F0F0;">${escHtml(p.currentLifter)}</strong> <span style="color:#777;">&mdash; ${escHtml(p.liftName || '')} attempt ${escHtml(String(p.attemptNumber || ''))}</span>`
@@ -1275,7 +1282,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    try {
+    const doSubscribe = async () => {
       await addSubscription(email, lifter, meet);
       await addPersistentSubscription(email, lifter);
       delete subsCache[meet];
@@ -1287,10 +1294,18 @@ const server = http.createServer(async (req, res) => {
       const allSubs = await getSubscriptionsByEmail(email);
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(successHTML(lifter, meet, allSubs));
+    };
+    try {
+      await doSubscribe();
     } catch (err) {
-      console.error(`[SUBSCRIBE ERROR] ${err.message}`);
-      res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end('Failed to subscribe. Please try again.');
+      console.error(`[SUBSCRIBE ERROR] ${err.message} — retrying once...`);
+      try {
+        await doSubscribe();
+      } catch (retryErr) {
+        console.error(`[SUBSCRIBE ERROR] retry failed: ${retryErr.message}`);
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Failed to subscribe. Please try again.');
+      }
     }
 
   } else if (req.method === 'GET' && url.pathname === '/unsubscribe') {
@@ -1386,6 +1401,16 @@ ${FONT_LINKS}
       console.error(`[STOP-FOLLOWING ERROR] ${err.message}`);
       res.writeHead(500, { 'Content-Type': 'text/plain' });
       res.end('Failed to stop following. Please try again.');
+    }
+
+  } else if (url.pathname === '/stats') {
+    try {
+      const stats = await getStats();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(stats, null, 2));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
     }
 
   } else if (url.pathname === '/health') {
