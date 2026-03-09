@@ -335,34 +335,7 @@ function checkPlatforms(meetId) {
       }
     }
 
-    // Email notifications for current lifter
-    if (currentLifter?.name && !ts.notifiedLifting.has(currentLifter.name)) {
-      ts.notifiedLifting.add(currentLifter.name);
-      const currentAttempt = st.attempts[platform.currentAttemptId];
-      const currentWeight = currentAttempt?.weight || null;
-      const placeInfo = getPlaceInfo(st, platformId, parsed.lifterId, currentWeight, parsed.liftName);
-      notifySubscribers(meetId, currentLifter.name, parsed.liftName, 'lifting', {
-        weight: currentWeight,
-        attemptNumber: parsed.attemptNumber,
-        liftName: parsed.liftName,
-        ...placeInfo,
-      });
-    }
-
-    // Email notifications for on deck
-    if (nextAttempts.length > 0 && nextAttempts[0].lifterName && !ts.notifiedOnDeck.has(nextAttempts[0].lifterName)) {
-      ts.notifiedOnDeck.add(nextAttempts[0].lifterName);
-      const a = nextAttempts[0];
-      const placeInfo = getPlaceInfo(st, platformId, a.lifterId, a.weight, a.liftName);
-      notifySubscribers(meetId, a.lifterName, a.liftName, 'on-deck', {
-        weight: a.weight,
-        attemptNumber: a.attemptNumber,
-        liftName: a.liftName,
-        ...placeInfo,
-      });
-    }
-
-    // Email notifications for in the hole
+    // Email notification: only when lifter is in the hole (2 away) — gives enough lead time
     if (nextAttempts.length > 1 && nextAttempts[1].lifterName && !ts.notifiedInTheHole.has(nextAttempts[1].lifterName)) {
       ts.notifiedInTheHole.add(nextAttempts[1].lifterName);
       const a = nextAttempts[1];
@@ -1077,7 +1050,7 @@ ${FONT_LINKS}
 </head><body><div class="card animate-in">
   <div style="text-align:center;margin-bottom:1.25rem;"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></div>
   <div class="success-heading">SUBSCRIBED!</div>
-  <p class="confirm-text">You'll get an email when <strong>${escHtml(lifter)}</strong> is on deck at <strong>${escHtml(meetName)}</strong>.<br><span style="font-size:0.85rem;color:#777;">You'll also be auto-subscribed when they compete in future meets.</span></p>
+  <p class="confirm-text">You'll get an email when <strong>${escHtml(lifter)}</strong> is almost up (2 lifters away) at <strong>${escHtml(meetName)}</strong>.<br><span style="font-size:0.85rem;color:#777;">You'll also be auto-subscribed when they compete in future meets.</span></p>
   <div class="spam-warning">Check your spam/junk folder and mark our emails as &ldquo;Not Spam&rdquo; to make sure you get alerts on time.</div>
   <div class="subs-heading">YOUR SUBSCRIPTIONS</div>
   <table><thead><tr><th>Lifter</th><th>Meet</th><th></th></tr></thead><tbody>${subsRows}</tbody></table>
@@ -1118,7 +1091,7 @@ ${FONT_LINKS}
 </head><body><div class="card animate-in">
   <div style="text-align:center;margin-bottom:1.25rem;"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></div>
   <div class="success-heading">SUBSCRIBED!</div>
-  <p class="confirm-text">You'll get alerts when ${namesList} ${items.length === 1 ? 'is' : 'are'} on deck.<br><span style="font-size:0.85rem;color:#777;">You'll also be auto-subscribed when they compete in future meets.</span></p>
+  <p class="confirm-text">You'll get alerts when ${namesList} ${items.length === 1 ? 'is' : 'are'} almost up (2 lifters away).<br><span style="font-size:0.85rem;color:#777;">You'll also be auto-subscribed when they compete in future meets.</span></p>
   <div class="spam-warning">Check your spam/junk folder and mark our emails as &ldquo;Not Spam&rdquo; to make sure you get alerts on time.</div>
   <div class="subs-heading">YOUR SUBSCRIPTIONS</div>
   <table><thead><tr><th>Lifter</th><th>Meet</th><th></th></tr></thead><tbody>${subsRows}</tbody></table>

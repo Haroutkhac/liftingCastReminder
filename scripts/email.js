@@ -38,10 +38,7 @@ async function sendOnDeckEmail(toEmail, lifterName, meetName, liftName, position
   const dedupKey = `${toEmail}:${meetId}:${lifterName}:${liftName}:${position}`;
   if (recentlySent.has(dedupKey)) return false;
 
-  const positionLabel =
-    position === 'lifting' ? 'LIFTING NOW' :
-    position === 'on-deck' ? 'ON DECK (next to lift)' :
-    'IN THE HOLE (2 away)';
+  const positionLabel = 'ALMOST UP (2 lifters away)';
 
   const baseUrl = process.env.RAILWAY_PUBLIC_DOMAIN
     ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
@@ -131,7 +128,7 @@ async function sendSubscriptionConfirmation(toEmail, lifterName, meetName, meetD
       subject: `LiftAlert: Subscription confirmed for ${lifterName}`,
       html: `
         <h2>You're subscribed!</h2>
-        <p>You'll receive alerts when <strong>${lifterName}</strong> is on deck, in the hole, or lifting.</p>
+        <p>You'll receive alerts when <strong>${lifterName}</strong> is almost up (2 lifters away).</p>
         <table style="margin:16px 0;border-collapse:collapse;">
           <tr><td style="padding:4px 12px 4px 0;color:#888;">Meet</td><td style="padding:4px 0;">${meetName}</td></tr>
           ${meetDate ? `<tr><td style="padding:4px 12px 4px 0;color:#888;">Date</td><td style="padding:4px 0;">${meetDate}</td></tr>` : ''}
@@ -176,7 +173,7 @@ async function sendAutoSubscribeNotification(toEmail, lifterName, meetName, meet
         <h2>LiftAlert Auto-Subscription</h2>
         <p>Heads up! <strong>${lifterName}</strong> is competing at <strong>${meetName}</strong>${meetDate ? ` on <strong>${meetDate}</strong>` : ''}.</p>
         <p>Since you follow them, you've been auto-subscribed to alerts for this meet.</p>
-        <p style="font-size:13px;color:#888;">You'll receive notifications when ${lifterName} is on deck, in the hole, or lifting.</p>
+        <p style="font-size:13px;color:#888;">You'll receive notifications when ${lifterName} is almost up (2 lifters away).</p>
         ${youtubeSearchUrl(meetName) ? `<p style="margin:12px 0;"><a href="${youtubeSearchUrl(meetName)}" style="color:#3b82f6;font-weight:600;">Watch Live on YouTube</a></p>` : ''}
         <hr>
         <p style="font-size:12px;color:#888;">
