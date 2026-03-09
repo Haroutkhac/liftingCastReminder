@@ -137,6 +137,7 @@ async function sendSubscriptionConfirmation(toEmail, lifterName, meetName, meetD
           ${meetDate ? `<tr><td style="padding:4px 12px 4px 0;color:#888;">Date</td><td style="padding:4px 0;">${meetDate}</td></tr>` : ''}
         </table>
         <p style="font-size:13px;color:#888;">No action needed — we'll email you automatically when it's almost time for ${lifterName} to lift.</p>
+        <p style="font-size:13px;color:#888;">You'll also be automatically subscribed when this lifter competes in future meets.</p>
         ${youtubeSearchUrl(meetName) ? `<p style="margin:12px 0;"><a href="${youtubeSearchUrl(meetName)}" style="color:#3b82f6;font-weight:600;">Watch Live on YouTube</a></p>` : ''}
         <p style="font-size:13px;color:#e6a817;background:#2a2a1a;padding:8px 12px;border-radius:6px;margin:12px 0;"><strong>Important:</strong> Check your spam/junk folder and mark this email as "Not Spam" so you don't miss alerts!</p>
         <hr>
@@ -153,4 +154,42 @@ async function sendSubscriptionConfirmation(toEmail, lifterName, meetName, meetD
   }
 }
 
-module.exports = { sendOnDeckEmail, sendSubscriptionConfirmation };
+async function sendAutoSubscribeNotification(toEmail, lifterName, meetName, meetDate, meetId) {
+  const client = getResend();
+  if (!client) {
+    console.log(`[EMAIL] Skipping auto-subscribe notification (no RESEND_API_KEY): ${lifterName} -> ${toEmail}`);
+    return false;
+  }
+
+  const baseUrl = process.env.RAILWAY_PUBLIC_DOMAIN
+    ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+    : `http://localhost:${process.env.PORT || 3000}`;
+
+  const unsubLink = `${baseUrl}/unsubscribe?email=${encodeURIComponent(toEmail)}&lifter=${encodeURIComponent(lifterName)}&meet=${encodeURIComponent(meetId)}`;
+
+  try {
+    await client.emails.send({
+      from: fromEmail,
+      to: toEmail,
+      subject: `LiftAlert: ${lifterName} is competing at ${meetName}`,
+      html: `
+        <h2>LiftAlert Auto-Subscription</h2>
+        <p>Heads up! <strong>${lifterName}</strong> is competing at <strong>${meetName}</strong>${meetDate ? ` on <strong>${meetDate}</strong>` : ''}.</p>
+        <p>Since you follow them, you've been auto-subscribed to alerts for this meet.</p>
+        <p style="font-size:13px;color:#888;">You'll receive notifications when ${lifterName} is on deck, in the hole, or lifting.</p>
+        ${youtubeSearchUrl(meetName) ? `<p style="margin:12px 0;"><a href="${youtubeSearchUrl(meetName)}" style="color:#3b82f6;font-weight:600;">Watch Live on YouTube</a></p>` : ''}
+        <hr>
+        <p style="font-size:12px;color:#888;">
+          <a href="${unsubLink}">Unsubscribe from alerts for ${lifterName}</a> (also stops future auto-subscriptions)
+        </p>
+      `,
+    });
+    console.log(`[EMAIL] Sent auto-subscribe notification to ${toEmail} for ${lifterName} at ${meetName}`);
+    return true;
+  } catch (err) {
+    console.error(`[EMAIL ERROR] Failed to send auto-subscribe notification to ${toEmail}: ${err.message}`);
+    return false;
+  }
+}
+
+module.exports = { sendOnDeckEmail, sendSubscriptionConfirmation, sendAutoSubscribeNotification };

@@ -26,8 +26,9 @@
  */
 const http = require('http');
 const https = require('https');
-const { initDB, getSubscriptions, getAllMeetIds, addSubscription, removeSubscription, getSubscriptionsByEmail } = require('./db');
-const { sendOnDeckEmail, sendSubscriptionConfirmation } = require('./email');
+const { initDB, getSubscriptions, getAllMeetIds, addSubscription, removeSubscription, getSubscriptionsByEmail,
+        addPersistentSubscription, removePersistentSubscription, getPersistentSubscriptionsByEmail, getAllPersistentSubscriptions } = require('./db');
+const { sendOnDeckEmail, sendSubscriptionConfirmation, sendAutoSubscribeNotification } = require('./email');
 const { getMeetPlatform, loadSymPlmeetMeet, watchSymPlmeet, stopSymPlmeet,
         stopAllSymPlmeet, discoverTodaysSymPlmeetMeets, normalizeSymPlmeetData } = require('./symplmeet_client');
 
@@ -83,6 +84,10 @@ function parseAttemptId(attemptId) {
 // --- Per-meet state ---
 // meets: { [meetId]: { meet, platforms, lifters, divisions, attempts, lastSeq, trackState } }
 const meets = {};
+
+// --- Meets page cache (avoids recomputing attempt order on every page load) ---
+let meetsPageCache = { html: null, ts: 0 };
+const MEETS_PAGE_CACHE_TTL = 5_000; // 5 seconds
 
 // --- Subscription cache (avoids hitting Postgres on every attempt change) ---
 const subsCache = {};
@@ -279,6 +284,16 @@ function checkPlatforms(meetId) {
     const order = computeAttemptOrder(st, platformId);
     const currentIdx = order.findIndex(a => a.attemptId === platform.currentAttemptId);
     const nextAttempts = currentIdx >= 0 ? order.slice(currentIdx + 1) : [];
+
+    // Cache platform summary for /meets page (avoids recomputing order on page load)
+    st.platformSummaryCache = st.platformSummaryCache || {};
+    st.platformSummaryCache[platformId] = {
+      currentLifter: currentName,
+      liftName: parsed?.liftName || null,
+      attemptNumber: parsed?.attemptNumber || null,
+      nextUp: (currentIdx >= 0 ? order.slice(currentIdx + 1, currentIdx + 3) : [])
+        .map(a => ({ name: a.lifterName, lift: a.liftName, attempt: a.attemptNumber })),
+    };
 
     if (!st.trackState[platformId]) {
       st.trackState[platformId] = { lastCurrentAttemptId: null, notifiedOnDeck: new Set(), notifiedInTheHole: new Set(), notifiedLifting: new Set() };
@@ -518,6 +533,40 @@ async function fetchTodaysMeetIds() {
   }
 }
 
+// --- Auto-subscribe persistent followers when a meet is indexed ---
+async function autoSubscribeForMeet(meetId) {
+  try {
+    const st = getMeetState(meetId);
+    const lifterNames = Object.values(st.lifters).map(l => l.name).filter(Boolean);
+    if (lifterNames.length === 0) return;
+    const persistentSubs = await getAllPersistentSubscriptions();
+    if (persistentSubs.length === 0) return;
+    const lifterNamesLower = lifterNames.map(n => n.toLowerCase());
+    let created = 0;
+    for (const ps of persistentSubs) {
+      const idx = lifterNamesLower.indexOf(ps.lifter_name.toLowerCase());
+      if (idx === -1) continue;
+      const actualName = lifterNames[idx];
+      try {
+        await addSubscription(ps.email, actualName, meetId);
+        created++;
+        const meetName = st.meet?.name || meetId;
+        const meetDate = st.meet?.date || '';
+        sendAutoSubscribeNotification(ps.email, actualName, meetName, meetDate, meetId);
+        console.log(`[AUTO-SUB] ${ps.email} auto-subscribed to "${actualName}" in meet ${meetId}`);
+      } catch (err) {
+        console.error(`[AUTO-SUB ERROR] ${ps.email} -> "${ps.lifter_name}": ${err.message}`);
+      }
+    }
+    if (created > 0) {
+      delete subsCache[meetId];
+      console.log(`[AUTO-SUB] Created ${created} auto-subscriptions for meet ${meetId}`);
+    }
+  } catch (err) {
+    console.error(`[AUTO-SUB ERROR] Failed for meet ${meetId}: ${err.message}`);
+  }
+}
+
 // --- Load a meet's lifters for autocomplete only (no changes feed) ---
 async function indexMeet(meetId) {
   if (pendingMeets.has(meetId)) return;
@@ -532,6 +581,7 @@ async function indexMeet(meetId) {
       await loadMeet(meetId);
     }
     loadedMeets.add(meetId);
+    await autoSubscribeForMeet(meetId);
   } catch (err) {
     console.error(`[INDEX ERROR] Failed to index ${meetId}: ${err.message}`);
   } finally {
@@ -624,7 +674,7 @@ async function discoverTodaysMeets() {
       if (pendingMeets.has(m.id)) continue;
       try {
         const st = getMeetState(m.id);
-        await loadSymPlmeetMeet(m.id, st);
+        await loadSymPlmeetMeet(m.id, st, m.name);
         loadedMeets.add(m.id);
       } catch (err) {
         console.error(`[DISCOVER] Failed to index SymPlmeet meet ${m.id}: ${err.message}`);
@@ -1000,7 +1050,7 @@ ${FONT_LINKS}
 </head><body><div class="card animate-in">
   <div style="text-align:center;margin-bottom:1.25rem;"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></div>
   <div class="success-heading">SUBSCRIBED!</div>
-  <p class="confirm-text">You'll get an email when <strong>${escHtml(lifter)}</strong> is on deck at <strong>${escHtml(meetName)}</strong>.</p>
+  <p class="confirm-text">You'll get an email when <strong>${escHtml(lifter)}</strong> is on deck at <strong>${escHtml(meetName)}</strong>.<br><span style="font-size:0.85rem;color:#777;">You'll also be auto-subscribed when they compete in future meets.</span></p>
   <div class="spam-warning">Check your spam/junk folder and mark our emails as &ldquo;Not Spam&rdquo; to make sure you get alerts on time.</div>
   <div class="subs-heading">YOUR SUBSCRIPTIONS</div>
   <table><thead><tr><th>Lifter</th><th>Meet</th><th></th></tr></thead><tbody>${subsRows}</tbody></table>
@@ -1009,7 +1059,7 @@ ${FONT_LINKS}
 }
 
 function unsubHTML(success) {
-  const msg = success ? 'You have been unsubscribed.' : 'Subscription not found (may already be removed).';
+  const msg = success ? 'You have been unsubscribed. You will no longer be auto-subscribed to this lifter in future meets.' : 'Subscription not found (may already be removed).';
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Unsubscribed - LiftAlert</title>
 ${FONT_LINKS}
@@ -1081,35 +1131,60 @@ ${FONT_LINKS}
 </div></body></html>`;
 }
 
-function mySubscriptionsHTML(email, subs) {
+function mySubscriptionsHTML(email, subs, persistentSubs) {
   const heading = email ? `Subscriptions for ${escHtml(email)}` : 'My Subscriptions';
   let content = '';
-  if (email && subs.length === 0) {
+  if (email && subs.length === 0 && (!persistentSubs || persistentSubs.length === 0)) {
     content = `<p style="color:#555;text-align:center;margin:1.5rem 0;">No subscriptions found for this email.</p>`;
   } else if (email) {
-    const rows = subs.map(s => {
-      const mName = meets[s.meet_id]?.meet?.name || s.meet_id;
-      const meetDate = meets[s.meet_id]?.meet?.date || '';
-      const meetLocation = meets[s.meet_id]?.meet?.location || meets[s.meet_id]?.meet?.city || '';
-      const details = [escHtml(meetDate), escHtml(meetLocation)].filter(Boolean).join(' &middot; ');
-      return `<tr>
-        <td>${escHtml(s.lifter_name)}</td>
-        <td>${escHtml(mName)}${details ? '<br><span style="font-size:0.75rem;color:#555">' + details + '</span>' : ''}</td>
+    // Persistent "Following" section
+    let followingSection = '';
+    if (persistentSubs && persistentSubs.length > 0) {
+      const pRows = persistentSubs.map(ps => `<tr>
+        <td>${escHtml(ps.lifter_name)}</td>
         <td style="text-align:right">
-          <form method="POST" action="/unsubscribe" style="display:inline" onsubmit="return confirm('Remove alert for ${escHtml(s.lifter_name).replace(/'/g, "\\'")}?')">
-            <input type="hidden" name="email" value="${escHtml(s.email)}">
-            <input type="hidden" name="lifter" value="${escHtml(s.lifter_name)}">
-            <input type="hidden" name="meet" value="${escHtml(s.meet_id)}">
-            <input type="hidden" name="return" value="my-subscriptions">
-            <button type="submit" style="background:none;border:none;color:#DC2626;cursor:pointer;font-size:0.85rem;padding:0.25rem 0.5rem;font-family:'Outfit',sans-serif;">remove</button>
+          <form method="POST" action="/stop-following" style="display:inline" onsubmit="return confirm('Stop following ${escHtml(ps.lifter_name).replace(/'/g, "\\'")}? (Current meet alerts stay active)')">
+            <input type="hidden" name="email" value="${escHtml(email)}">
+            <input type="hidden" name="lifter" value="${escHtml(ps.lifter_name)}">
+            <button type="submit" style="background:none;border:none;color:#DC2626;cursor:pointer;font-size:0.85rem;padding:0.25rem 0.5rem;font-family:'Outfit',sans-serif;">stop following</button>
           </form>
         </td>
-      </tr>`;
-    }).join('');
-    content = `<table style="margin-top:1.25rem;">
-      <thead><tr><th>Lifter</th><th>Meet</th><th></th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
+      </tr>`).join('');
+      followingSection = `<div style="margin-top:1.25rem;">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:1.1rem;color:#777;letter-spacing:0.06em;margin-bottom:0.5rem;">FOLLOWING</div>
+        <p style="font-size:0.8rem;color:#555;margin-bottom:0.5rem;">Auto-subscribed when these lifters compete in any meet.</p>
+        <table><thead><tr><th>Lifter</th><th></th></tr></thead><tbody>${pRows}</tbody></table>
+      </div>`;
+    }
+
+    // Per-meet subscriptions
+    let meetSection = '';
+    if (subs.length > 0) {
+      const rows = subs.map(s => {
+        const mName = meets[s.meet_id]?.meet?.name || s.meet_id;
+        const meetDate = meets[s.meet_id]?.meet?.date || '';
+        const meetLocation = meets[s.meet_id]?.meet?.location || meets[s.meet_id]?.meet?.city || '';
+        const details = [escHtml(meetDate), escHtml(meetLocation)].filter(Boolean).join(' &middot; ');
+        return `<tr>
+          <td>${escHtml(s.lifter_name)}</td>
+          <td>${escHtml(mName)}${details ? '<br><span style="font-size:0.75rem;color:#555">' + details + '</span>' : ''}</td>
+          <td style="text-align:right">
+            <form method="POST" action="/unsubscribe" style="display:inline" onsubmit="return confirm('Remove alert for ${escHtml(s.lifter_name).replace(/'/g, "\\'")}? This also stops following them.')">
+              <input type="hidden" name="email" value="${escHtml(s.email)}">
+              <input type="hidden" name="lifter" value="${escHtml(s.lifter_name)}">
+              <input type="hidden" name="meet" value="${escHtml(s.meet_id)}">
+              <input type="hidden" name="return" value="my-subscriptions">
+              <button type="submit" style="background:none;border:none;color:#DC2626;cursor:pointer;font-size:0.85rem;padding:0.25rem 0.5rem;font-family:'Outfit',sans-serif;">remove</button>
+            </form>
+          </td>
+        </tr>`;
+      }).join('');
+      meetSection = `<div style="margin-top:1.25rem;">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:1.1rem;color:#777;letter-spacing:0.06em;margin-bottom:0.5rem;">MEET ALERTS</div>
+        <table><thead><tr><th>Lifter</th><th>Meet</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+      </div>`;
+    }
+    content = followingSection + meetSection;
   }
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>My Subscriptions - LiftAlert</title>
@@ -1150,15 +1225,19 @@ const server = http.createServer(async (req, res) => {
   } else if (req.method === 'GET' && url.pathname === '/my-subscriptions') {
     const email = url.searchParams.get('email') || '';
     let subs = [];
+    let persistentSubs = [];
     if (email) {
       try {
-        subs = await getSubscriptionsByEmail(email);
+        [subs, persistentSubs] = await Promise.all([
+          getSubscriptionsByEmail(email),
+          getPersistentSubscriptionsByEmail(email),
+        ]);
       } catch (err) {
         console.error(`[LOOKUP ERROR] ${err.message}`);
       }
     }
     res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end(mySubscriptionsHTML(email, subs));
+    res.end(mySubscriptionsHTML(email, subs, persistentSubs));
 
   } else if (req.method === 'POST' && url.pathname === '/subscribe') {
     let body = '';
@@ -1198,8 +1277,9 @@ const server = http.createServer(async (req, res) => {
 
     try {
       await addSubscription(email, lifter, meet);
+      await addPersistentSubscription(email, lifter);
       delete subsCache[meet];
-      console.log(`[SUBSCRIBE] ${email} -> "${lifter}" in meet ${meet}`);
+      console.log(`[SUBSCRIBE] ${email} -> "${lifter}" in meet ${meet} (+ persistent follow)`);
       startMeet(meet);
       const meetName = meets[meet]?.meet?.name || meet;
       const meetDate = meets[meet]?.meet?.date || '';
@@ -1239,7 +1319,7 @@ ${FONT_LINKS}
 </style>
 </head><body><div class="card animate-in">
   <span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span>
-  <p class="confirm-msg">Remove alert for <strong>${escHtml(lifter)}</strong> at <strong>${escHtml(meetName)}</strong>?</p>
+  <p class="confirm-msg">Remove alert for <strong>${escHtml(lifter)}</strong> at <strong>${escHtml(meetName)}</strong>?<br><span style="font-size:0.85rem;">This also stops auto-subscribing to this lifter in future meets.</span></p>
   <form method="POST" action="/unsubscribe">
     <input type="hidden" name="email" value="${escHtml(email)}">
     <input type="hidden" name="lifter" value="${escHtml(lifter)}">
@@ -1269,8 +1349,9 @@ ${FONT_LINKS}
 
     try {
       const removed = await removeSubscription(email, lifter, meet);
+      await removePersistentSubscription(email, lifter);
       delete subsCache[meet];
-      console.log(`[UNSUBSCRIBE] ${email} -> "${lifter}" in meet ${meet} (${removed ? 'removed' : 'not found'})`);
+      console.log(`[UNSUBSCRIBE] ${email} -> "${lifter}" in meet ${meet} (${removed ? 'removed' : 'not found'}) + persistent follow removed`);
       if (returnTo === 'my-subscriptions') {
         res.writeHead(302, { 'Location': `/my-subscriptions?email=${encodeURIComponent(email)}` });
         res.end();
@@ -1282,6 +1363,29 @@ ${FONT_LINKS}
       console.error(`[UNSUBSCRIBE ERROR] ${err.message}`);
       res.writeHead(500, { 'Content-Type': 'text/plain' });
       res.end('Failed to unsubscribe. Please try again.');
+    }
+
+  } else if (req.method === 'POST' && url.pathname === '/stop-following') {
+    let body = '';
+    for await (const chunk of req) {
+      body += chunk;
+      if (body.length > 8192) break;
+    }
+    const { email, lifter } = parseFormBody(body);
+    if (!email || !lifter) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('Missing required params: email, lifter');
+      return;
+    }
+    try {
+      await removePersistentSubscription(email, lifter);
+      console.log(`[STOP-FOLLOWING] ${email} stopped following "${lifter}"`);
+      res.writeHead(302, { 'Location': `/my-subscriptions?email=${encodeURIComponent(email)}` });
+      res.end();
+    } catch (err) {
+      console.error(`[STOP-FOLLOWING ERROR] ${err.message}`);
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Failed to stop following. Please try again.');
     }
 
   } else if (url.pathname === '/health') {
@@ -1323,40 +1427,52 @@ ${FONT_LINKS}
     res.end(JSON.stringify(allMeets, null, 2));
 
   } else if (req.method === 'GET' && url.pathname === '/meets') {
-    const meetList = [];
-    for (const [mid, st] of Object.entries(meets)) {
-      const lifterCount = Object.keys(st.lifters).length;
-      const platformCount = Object.keys(st.platforms).length;
-      const meetDoc = st.meet || {};
-      const platformSummaries = [];
-      for (const [pid, platform] of Object.entries(st.platforms)) {
-        const parsed = parseAttemptId(platform.currentAttemptId);
-        const currentLifter = parsed ? st.lifters[parsed.lifterId] : null;
-        const order = computeAttemptOrder(st, pid);
-        const currentIdx = platform.currentAttemptId ? order.findIndex(a => a.attemptId === platform.currentAttemptId) : -1;
-        const nextUp = currentIdx >= 0 ? order.slice(currentIdx + 1, currentIdx + 3) : [];
-        platformSummaries.push({
-          name: platform.name || pid,
-          currentLifter: currentLifter?.name || null,
-          liftName: parsed?.liftName || null,
-          attemptNumber: parsed?.attemptNumber || null,
-          nextUp: nextUp.map(a => ({ name: a.lifterName, lift: a.liftName, attempt: a.attemptNumber })),
+    if (meetsPageCache.html && Date.now() - meetsPageCache.ts < MEETS_PAGE_CACHE_TTL) {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(meetsPageCache.html);
+    } else {
+      const meetList = [];
+      for (const [mid, st] of Object.entries(meets)) {
+        const lifterCount = Object.keys(st.lifters).length;
+        const platformCount = Object.keys(st.platforms).length;
+        const meetDoc = st.meet || {};
+        const platformSummaries = [];
+        for (const [pid, platform] of Object.entries(st.platforms)) {
+          const cached = st.platformSummaryCache?.[pid];
+          if (cached) {
+            platformSummaries.push({ name: platform.name || pid, ...cached });
+          } else {
+            const parsed = parseAttemptId(platform.currentAttemptId);
+            const currentLifter = parsed ? st.lifters[parsed.lifterId] : null;
+            const order = computeAttemptOrder(st, pid);
+            const currentIdx = platform.currentAttemptId ? order.findIndex(a => a.attemptId === platform.currentAttemptId) : -1;
+            const nextUp = currentIdx >= 0 ? order.slice(currentIdx + 1, currentIdx + 3) : [];
+            platformSummaries.push({
+              name: platform.name || pid,
+              currentLifter: currentLifter?.name || null,
+              liftName: parsed?.liftName || null,
+              attemptNumber: parsed?.attemptNumber || null,
+              nextUp: nextUp.map(a => ({ name: a.lifterName, lift: a.liftName, attempt: a.attemptNumber })),
+            });
+          }
+        }
+        meetList.push({
+          id: mid,
+          name: meetDoc.name || mid,
+          date: meetDoc.date || '',
+          location: meetDoc.location || meetDoc.city || '',
+          lifterCount,
+          platformCount,
+          watching: watchingMeets.has(mid),
+          platforms: platformSummaries,
         });
       }
-      meetList.push({
-        id: mid,
-        name: meetDoc.name || mid,
-        date: meetDoc.date || '',
-        location: meetDoc.location || meetDoc.city || '',
-        lifterCount,
-        platformCount,
-        watching: watchingMeets.has(mid),
-        platforms: platformSummaries,
-      });
+      meetList.sort((a, b) => a.name.localeCompare(b.name));
+      const html = meetsHTML(meetList);
+      meetsPageCache = { html, ts: Date.now() };
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(html);
     }
-    meetList.sort((a, b) => a.name.localeCompare(b.name));
-    res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end(meetsHTML(meetList));
 
   } else if (req.method === 'GET' && url.pathname === '/api/lifters') {
     const results = [];

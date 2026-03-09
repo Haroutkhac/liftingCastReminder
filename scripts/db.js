@@ -23,7 +23,19 @@ async function initDB() {
       UNIQUE(email, lifter_name, meet_id)
     )
   `);
-  console.log('[DB] Subscriptions table ready');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS persistent_subscriptions (
+      id SERIAL PRIMARY KEY,
+      email TEXT NOT NULL,
+      lifter_name TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS persistent_subs_email_name
+      ON persistent_subscriptions (email, LOWER(lifter_name))
+  `);
+  console.log('[DB] Subscriptions + persistent_subscriptions tables ready');
 }
 
 async function getSubscriptions(meetId) {
@@ -64,4 +76,37 @@ async function removeSubscription(email, lifterName, meetId) {
   return rowCount > 0;
 }
 
-module.exports = { initDB, getSubscriptions, getAllMeetIds, addSubscription, removeSubscription, getSubscriptionsByEmail };
+async function addPersistentSubscription(email, lifterName) {
+  await pool.query(
+    `INSERT INTO persistent_subscriptions (email, lifter_name)
+     VALUES ($1, $2)
+     ON CONFLICT (email, LOWER(lifter_name)) DO NOTHING`,
+    [email, lifterName]
+  );
+}
+
+async function removePersistentSubscription(email, lifterName) {
+  const { rowCount } = await pool.query(
+    'DELETE FROM persistent_subscriptions WHERE email = $1 AND LOWER(lifter_name) = LOWER($2)',
+    [email, lifterName]
+  );
+  return rowCount > 0;
+}
+
+async function getPersistentSubscriptionsByEmail(email) {
+  const { rows } = await pool.query(
+    'SELECT email, lifter_name, created_at FROM persistent_subscriptions WHERE email = $1 ORDER BY created_at DESC',
+    [email]
+  );
+  return rows;
+}
+
+async function getAllPersistentSubscriptions() {
+  const { rows } = await pool.query('SELECT email, lifter_name FROM persistent_subscriptions');
+  return rows;
+}
+
+module.exports = {
+  initDB, getSubscriptions, getAllMeetIds, addSubscription, removeSubscription, getSubscriptionsByEmail,
+  addPersistentSubscription, removePersistentSubscription, getPersistentSubscriptionsByEmail, getAllPersistentSubscriptions,
+};

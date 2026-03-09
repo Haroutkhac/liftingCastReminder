@@ -57,10 +57,14 @@ function normalizeSymPlmeetData(meetId, data, meetState) {
   const rawLiftingOrder = typeof data.liftingOrderThisRound === 'string' ? JSON.parse(data.liftingOrderThisRound) : data.liftingOrderThisRound;
   const liftingOrder = Array.isArray(rawLiftingOrder) ? rawLiftingOrder : [];
 
-  // Meet doc
+  // Meet doc — check multiple possible name fields, preserve previously discovered name
+  const meetName = meetInfo.meetName || meetInfo.name || meetInfo.title
+    || data.meetName || data.name
+    || (meetState.meet && meetState.meet.name)
+    || `SymPlmeet #${meetId}`;
   meetState.meet = {
     _id: String(meetId),
-    name: meetInfo.meetName || `SymPlmeet #${meetId}`,
+    name: meetName,
   };
 
   // Clear previous state for full refresh
@@ -224,8 +228,12 @@ function normalizeSymPlmeetData(meetId, data, meetState) {
 }
 
 // --- Load meet via REST ---
-async function loadSymPlmeetMeet(meetId, meetState) {
+async function loadSymPlmeetMeet(meetId, meetState, hintName) {
   console.log(`[SYMPLMEET] Loading meet ${meetId}...`);
+  // Pre-set discovered name so normalizeSymPlmeetData can preserve it as fallback
+  if (hintName && (!meetState.meet || meetState.meet.name === `SymPlmeet #${meetId}`)) {
+    meetState.meet = { _id: String(meetId), name: hintName };
+  }
   const data = await symplmeetFetchJSON(`/api/getSocketData/${meetId}`);
   normalizeSymPlmeetData(meetId, data, meetState);
   console.log(`[SYMPLMEET] Loaded: "${meetState.meet?.name}" | ${Object.keys(meetState.lifters).length} lifters`);
@@ -288,7 +296,7 @@ async function discoverTodaysSymPlmeetMeets() {
     console.log(`[SYMPLMEET] Discovered ${meets.length} today's meets`);
     return meets.map(m => ({
       id: String(m.id || m.meetId),
-      name: m.meetName || m.name || `SymPlmeet #${m.id || m.meetId}`,
+      name: m.meetName || m.name || m.title || `SymPlmeet #${m.id || m.meetId}`,
     }));
   } catch (err) {
     console.error(`[SYMPLMEET] Failed to discover today's meets: ${err.message}`);
