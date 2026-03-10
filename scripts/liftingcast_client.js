@@ -1657,11 +1657,22 @@ function meetDetailHTML(meetId, meetState, subscribedLifterNames, videoData, tim
     }
   }
 
-  // Build lifter rows with best lifts
+  // Build lifter rows with all 9 attempts (3 per lift)
   const lifters = Object.values(meetState.lifters).filter(l => l.name).map(l => {
+    const nameLower = (l.name || '').toLowerCase();
+    // Gather all attempts for this lifter: { sq1, sq2, sq3, bp1, bp2, bp3, dl1, dl2, dl3 }
+    const attemptMap = {};
+    const LIFT_SHORT = { squat: 'sq', bench: 'bp', dead: 'dl', deadlift: 'dl' };
+    for (const attempt of Object.values(meetState.attempts)) {
+      if (attempt.lifterId !== l._id) continue;
+      const liftShort = LIFT_SHORT[attempt.liftName];
+      if (!liftShort) continue;
+      const key = `${liftShort}${attempt.attemptNumber}`;
+      attemptMap[key] = { weight: attempt.weight || null, result: attempt.result || null };
+    }
+    // Compute best lifts and total
     const bests = computeLifterBests(meetState, l._id);
     const total = bests.squat + bests.bench + bests.dead;
-    const nameLower = (l.name || '').toLowerCase();
     return {
       id: l._id,
       name: l.name,
@@ -1670,6 +1681,7 @@ function meetDetailHTML(meetId, meetState, subscribedLifterNames, videoData, tim
       flight: l.flight || '',
       session: l.session || 1,
       team: l.team || '',
+      attempts: attemptMap,
       bestSq: bests.squat || null,
       bestBp: bests.bench || null,
       bestDl: bests.dead || null,
@@ -1723,25 +1735,40 @@ function meetDetailHTML(meetId, meetState, subscribedLifterNames, videoData, tim
     </div>`;
   }).filter(Boolean).join('');
 
-  // Detect which lift columns have data
-  const hasSq = lifters.some(l => l.bestSq);
-  const hasBp = lifters.some(l => l.bestBp);
-  const hasDl = lifters.some(l => l.bestDl);
+  // Detect which lift groups have any attempt data
+  const attemptKeys = ['sq1','sq2','sq3','bp1','bp2','bp3','dl1','dl2','dl3'];
+  const hasSq = lifters.some(l => l.attempts.sq1 || l.attempts.sq2 || l.attempts.sq3);
+  const hasBp = lifters.some(l => l.attempts.bp1 || l.attempts.bp2 || l.attempts.bp3);
+  const hasDl = lifters.some(l => l.attempts.dl1 || l.attempts.dl2 || l.attempts.dl3);
   const hasTotal = lifters.some(l => l.total);
 
-  const colDefs = [
-    ...(hasSq ? [{ key: 'bestSq', label: 'SQ', group: 'SQUAT', vodKey: 'vodSq' }] : []),
-    ...(hasBp ? [{ key: 'bestBp', label: 'BP', group: 'BENCH', vodKey: 'vodBp' }] : []),
-    ...(hasDl ? [{ key: 'bestDl', label: 'DL', group: 'DEADLIFT', vodKey: 'vodDl' }] : []),
-    ...(hasTotal ? [{ key: 'total', label: 'TOT', group: null, vodKey: null }] : []),
-  ];
+  // Build attempt columns: 3 per lift group + total
+  const attemptCols = [];
+  if (hasSq) { attemptCols.push({ key: 'sq1', group: 'sq' }, { key: 'sq2', group: 'sq' }, { key: 'sq3', group: 'sq', isLast: true }); }
+  if (hasBp) { attemptCols.push({ key: 'bp1', group: 'bp' }, { key: 'bp2', group: 'bp' }, { key: 'bp3', group: 'bp', isLast: true }); }
+  if (hasDl) { attemptCols.push({ key: 'dl1', group: 'dl' }, { key: 'dl2', group: 'dl' }, { key: 'dl3', group: 'dl', isLast: true }); }
+  if (hasTotal) { attemptCols.push({ key: 'total', group: 'total', isBest: true }); }
 
-  const headerRow = colDefs.map(c =>
-    `<th style="text-align:center;min-width:52px;padding:0.35rem 0.3rem;font-size:0.65rem;">${c.label}</th>`
+  // Group header row (SQUAT spans 4, BENCH spans 4, DEADLIFT spans 4, TOT spans 1)
+  const groupLabels = { sq: 'SQUAT', bp: 'BENCH', dl: 'DEADLIFT', total: 'TOTAL' };
+  const groupSpans = {};
+  for (const c of attemptCols) {
+    groupSpans[c.group] = (groupSpans[c.group] || 0) + 1;
+  }
+  const groupHeaderCells = Object.entries(groupSpans).map(([grp, span]) =>
+    `<th colspan="${span}" style="text-align:center;padding:0.25rem 0.2rem;font-size:0.6rem;color:#666;letter-spacing:0.08em;border-bottom:1px solid #252525;${grp !== 'total' ? 'border-right:2px solid #252525;' : ''}">${groupLabels[grp]}</th>`
   ).join('');
 
+  // Sub-header row (1, 2, 3 for each group, TOT for total)
+  const subHeaderCells = attemptCols.map(c => {
+    const label = c.isBest ? 'TOT' : c.key.slice(-1);
+    const borderR = (c.isLast || c.isBest) && c.group !== 'total' ? 'border-right:2px solid #252525;' : '';
+    const style = c.isBest ? `font-weight:600;color:#AAA;${borderR}` : borderR;
+    return `<th style="text-align:center;min-width:42px;padding:0.25rem 0.15rem;font-size:0.6rem;border-bottom:2px solid #252525;${style}">${label}</th>`;
+  }).join('');
+
   // Build body rows with weight class separators
-  const totalCols = colDefs.length + 1; // +1 for lifter name col
+  const totalCols = attemptCols.length + 1; // +1 for lifter name col
   let lastWc = null;
   const bodyRows = lifters.map(l => {
     let separator = '';
@@ -1752,19 +1779,28 @@ function meetDetailHTML(meetId, meetState, subscribedLifterNames, videoData, tim
     }
     const bwLabel = l.bodyWeight ? `<span style="color:#555;font-size:0.72rem;font-weight:300;"> ${l.bodyWeight}</span>` : '';
     const subHighlight = l.isSubscribed ? ' style="color:#DC2626;"' : '';
-    const cells = colDefs.map(c => {
-      const val = l[c.key];
-      if (!val) return '<td class="cell empty">&mdash;</td>';
-      const isTotalCol = c.key === 'total';
-      const vodUrl = c.vodKey ? l[c.vodKey] : null;
-      if (vodUrl) {
-        return `<td class="cell"><a href="${escHtml(vodUrl)}" target="_blank" style="color:#BBB;text-decoration:underline;text-decoration-color:#333;text-underline-offset:2px;">${val}</a></td>`;
+    const cells = attemptCols.map(c => {
+      const borderR = (c.isLast || c.isBest) && c.group !== 'total' ? 'border-right:2px solid #252525;' : '';
+      // Total column
+      if (c.isBest) {
+        const val = l[c.key];
+        if (!val) return `<td class="cell empty">&mdash;</td>`;
+        return `<td class="cell" style="font-weight:600;color:#F0F0F0;">${val}</td>`;
       }
-      const style = isTotalCol ? ' style="font-weight:600;color:#F0F0F0;"' : '';
-      return `<td class="cell"${style}>${val}</td>`;
+      // Individual attempt columns
+      const att = l.attempts[c.key];
+      if (!att || att.weight == null) return `<td class="cell empty" style="${borderR}">&mdash;</td>`;
+      const w = att.weight;
+      if (att.result === 'good') {
+        return `<td class="cell" style="color:#22C55E;${borderR}">${w}</td>`;
+      } else if (att.result === 'bad') {
+        return `<td class="cell" style="color:#EF4444;text-decoration:line-through;text-decoration-color:#EF4444;${borderR}">${w}</td>`;
+      }
+      // Pending (nominated but not yet attempted)
+      return `<td class="cell" style="color:#555;${borderR}">${w}</td>`;
     }).join('');
     return `${separator}<tr class="lifter-row" data-name="${escHtml(l.name.toLowerCase())}" data-wc="${l.weightClass || ''}">
-      <td class="lifter-name"><span${subHighlight}>${escHtml(l.name)}</span>${bwLabel}</td>
+      <td class="lifter-name"><a href="https://www.openpowerlifting.org/u/${encodeURIComponent(l.name.toLowerCase().replace(/[^a-z]/g, ''))}" target="_blank"${subHighlight ? ` style="color:#DC2626;"` : ''}>${escHtml(l.name)}</a>${bwLabel}</td>
       ${cells}
     </tr>`;
   }).join('');
@@ -1777,7 +1813,7 @@ ${FONT_LINKS}
 <style>
   ${SHARED_STYLES}
   body { padding: 1.5rem 0.75rem; }
-  .container { max-width: 700px; margin: 0 auto; }
+  .container { max-width: 1100px; margin: 0 auto; }
   .nav { margin-bottom: 1.5rem; font-size: 0.85rem; }
   .nav a { color: #777; }
   .nav a:hover { color: #F0F0F0; }
@@ -1786,14 +1822,18 @@ ${FONT_LINKS}
   .filter-input { width: 100%; max-width: 300px; padding: 0.5rem 0.75rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.85rem; font-family: 'Outfit', sans-serif; margin-bottom: 1rem; }
   .filter-input:focus { outline: none; border-color: #DC2626; box-shadow: 0 0 0 3px rgba(220,38,38,0.1); }
   .scoresheet { width: 100%; border-collapse: collapse; }
-  .scoresheet th { position: sticky; top: 0; background: #0A0A0A; z-index: 2; }
+  .scoresheet th { position: sticky; background: #0A0A0A; z-index: 2; }
+  .scoresheet thead tr:first-child th { top: 0; }
+  .scoresheet thead tr:nth-child(2) th { top: 1.4rem; }
   .scoresheet .lifter-name {
-    position: sticky; left: 0; background: #0A0A0A; z-index: 1;
-    padding: 0.5rem 0.75rem; white-space: nowrap; font-weight: 500; font-size: 0.85rem;
+    position: sticky; left: 0; background: #0A0A0A; z-index: 3;
+    padding: 0.45rem 0.6rem; white-space: nowrap; font-weight: 500; font-size: 0.82rem;
     border-bottom: 1px solid #1A1A1A; border-right: 2px solid #252525;
-    max-width: 180px; overflow: hidden; text-overflow: ellipsis;
+    max-width: 160px; overflow: hidden; text-overflow: ellipsis;
   }
-  .scoresheet .cell { text-align: center; padding: 0.45rem 0.3rem; border-bottom: 1px solid #1A1A1A; font-size: 0.85rem; color: #BBB; }
+  .scoresheet .lifter-name a { color: #F0F0F0; text-decoration: none; }
+  .scoresheet .lifter-name a:hover { text-decoration: underline; text-underline-offset: 2px; }
+  .scoresheet .cell { text-align: center; padding: 0.4rem 0.15rem; border-bottom: 1px solid #1A1A1A; font-size: 0.78rem; color: #BBB; white-space: nowrap; }
   .scoresheet .cell.empty { color: #333; }
   .scoresheet .lifter-row:hover td { background: #141414; }
   .scoresheet .lifter-row:hover .lifter-name { background: #141414; }
@@ -1803,8 +1843,8 @@ ${FONT_LINKS}
   .subscribe-link { display: inline-block; margin-top: 1rem; padding: 0.6rem 1.5rem; background: #DC2626; color: white; border-radius: 8px; font-family: 'Bebas Neue', sans-serif; font-size: 1rem; letter-spacing: 0.1em; transition: background 0.2s; }
   .subscribe-link:hover { background: #B91C1C; color: white; }
   @media (max-width: 600px) {
-    .scoresheet .lifter-name { font-size: 0.75rem; padding: 0.4rem 0.5rem; max-width: 120px; }
-    .scoresheet .cell { padding: 0.35rem 0.15rem; font-size: 0.75rem; }
+    .scoresheet .lifter-name { font-size: 0.7rem; padding: 0.35rem 0.4rem; max-width: 100px; }
+    .scoresheet .cell { padding: 0.3rem 0.1rem; font-size: 0.65rem; }
   }
 </style>
 </head><body><div class="container animate-in">
@@ -1818,7 +1858,8 @@ ${FONT_LINKS}
   <div class="table-wrap">
     <table class="scoresheet">
       <thead>
-        <tr><th style="text-align:left;padding:0.35rem 0.75rem;font-size:0.65rem;border-bottom:2px solid #252525;${colDefs.length ? 'border-right:2px solid #252525;' : ''}">LIFTER</th>${headerRow}</tr>
+        <tr><th rowspan="2" style="text-align:left;padding:0.35rem 0.6rem;font-size:0.65rem;border-bottom:2px solid #252525;border-right:2px solid #252525;">LIFTER</th>${groupHeaderCells}</tr>
+        <tr>${subHeaderCells}</tr>
       </thead>
       <tbody>${bodyRows}</tbody>
     </table>
