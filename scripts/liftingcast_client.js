@@ -29,7 +29,7 @@ const https = require('https');
 const { initDB, getSubscriptions, getAllMeetIds, addSubscription, removeSubscription, getSubscriptionsByEmail,
         addPersistentSubscription, removePersistentSubscription, getPersistentSubscriptionsByEmail, getAllPersistentSubscriptions,
         getStats, logAttemptTimestamp, getAttemptTimestampsByMeet, getMeetVideo, getMeetVideos, setMeetVideo,
-        getRecapLifterNames, getEmailStats } = require('./db');
+        getRecapLifterNames, getRecapMeets, getEmailStats } = require('./db');
 const { sendOnDeckEmail, sendSubscriptionConfirmation, sendAutoSubscribeNotification, sendRecapEmail } = require('./email');
 const { getMeetPlatform, loadSymPlmeetMeet, watchSymPlmeet, stopSymPlmeet,
         stopAllSymPlmeet, discoverTodaysSymPlmeetMeets, normalizeSymPlmeetData } = require('./symplmeet_client');
@@ -353,13 +353,13 @@ async function sendMeetRecaps(meetId) {
         const wallEpoch = Math.floor(new Date(t.wall_clock_time).getTime() / 1000);
         let youtubeLink = null;
         let timeFormatted = '';
-        if (videoId && streamStart) {
+        if (videoId && streamStart > 0) {
           const offset = Math.max(0, wallEpoch - streamStart - TIMESTAMP_LEAD_SECONDS);
           const h = Math.floor(offset / 3600);
           const m = Math.floor((offset % 3600) / 60);
           const s = Math.floor(offset % 60);
           timeFormatted = h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
-          youtubeLink = `https://youtu.be/${videoId}?t=${offset}`;
+          youtubeLink = `https://www.youtube.com/watch?v=${videoId}&t=${offset}`;
         }
         return {
           lift_name: t.lift_name,
@@ -969,8 +969,14 @@ function ytFetch(url) {
 async function searchYouTube(query) {
   try {
     const encoded = encodeURIComponent(query);
-    // sp=EgJAAQ%3D%3D filters for "Live" streams
-    const html = await ytFetch(`https://www.youtube.com/results?search_query=${encoded}&sp=EgJAAQ%3D%3D`);
+    // sp=EgJAAQ%3D%3D filters for "Live" streams — try this first
+    const liveHtml = await ytFetch(`https://www.youtube.com/results?search_query=${encoded}&sp=EgJAAQ%3D%3D`);
+    const liveMatch = liveHtml.match(/"videoId":"([^"]{11})"/);
+    if (liveMatch) return liveMatch[1];
+
+    // Fall back to regular search — take the first YouTube result
+    console.log(`[YT] No live stream found for "${query}", trying regular search...`);
+    const html = await ytFetch(`https://www.youtube.com/results?search_query=${encoded}`);
     const match = html.match(/"videoId":"([^"]{11})"/);
     if (!match) {
       console.log(`[YT] No videoId regex match in ${html.length} bytes of HTML — YouTube page structure may have changed`);
@@ -1022,13 +1028,12 @@ async function autoLinkYouTubeVideo(meetId, meetName, meetDate) {
   console.log(`[YT] Found video ${videoId}, fetching stream start time...`);
   const streamStart = await getYouTubeStreamStart(videoId);
   if (!streamStart) {
-    console.log(`[YT] Could not get stream start for ${videoId}`);
-    return;
+    console.log(`[YT] Could not get stream start for ${videoId} — linking video without timestamps`);
   }
 
   try {
-    await setMeetVideo(meetId, videoId, `https://youtu.be/${videoId}`, streamStart, meetName, meetDate);
-    console.log(`[YT] Auto-linked meet ${meetId} -> https://youtu.be/${videoId} (start: ${new Date(streamStart * 1000).toISOString()})`);
+    await setMeetVideo(meetId, videoId, `https://www.youtube.com/watch?v=${videoId}`, streamStart || 0, meetName, meetDate);
+    console.log(`[YT] Auto-linked meet ${meetId} -> https://www.youtube.com/watch?v=${videoId}${streamStart ? ` (start: ${new Date(streamStart * 1000).toISOString()})` : ' (no stream start — VOD only)'}`);
   } catch (err) {
     console.error(`[YT DB ERROR] ${err.message}`);
   }
@@ -1653,7 +1658,7 @@ function meetDetailHTML(meetId, meetState, subscribedLifterNames, videoData, tim
     }
     for (const [key, val] of Object.entries(bestByLifterLift)) {
       const offset = Math.max(0, val.wallEpoch - streamStart - TIMESTAMP_LEAD_SECONDS);
-      vodLinks[key] = `https://youtu.be/${videoId}?t=${offset}`;
+      vodLinks[key] = `https://www.youtube.com/watch?v=${videoId}&t=${offset}`;
     }
   }
 
@@ -2608,7 +2613,7 @@ function scrollToCurrentLifter() {
 function renderYT(data) {
   const el = document.getElementById('yt-link-wrap');
   if (data.video && data.video.youtubeVideoId) {
-    el.innerHTML = '<a class="yt-link" href="https://youtu.be/' + esc(data.video.youtubeVideoId) + '" target="_blank">&#x25B6; Watch on YouTube</a>';
+    el.innerHTML = '<p style="margin-bottom:1rem;"><a class="yt-link" href="https://www.youtube.com/watch?v=' + esc(data.video.youtubeVideoId) + '" target="_blank">&#x25B6; Watch on YouTube</a></p>';
   } else {
     el.innerHTML = '';
   }
@@ -2811,13 +2816,20 @@ function recapHTML(meetId, meetName, videoId, streamStart, timestamps, meetDate)
   }
 
   // Group by lifter, build cell map
+  const hasVod = videoId && streamStart > 0;
   const byLifter = {};
   for (const t of timestamps) {
     if (!byLifter[t.lifter_id]) byLifter[t.lifter_id] = { name: t.lifter_name, cells: {}, earliest: Infinity, bodyWeight: null };
     const wallEpoch = Math.floor(new Date(t.wall_clock_time).getTime() / 1000);
-    const offset = Math.max(0, wallEpoch - streamStart - TIMESTAMP_LEAD_SECONDS);
     const key = attemptKey(t);
-    byLifter[t.lifter_id].cells[key] = { weight: t.weight, offset, link: `https://youtu.be/${videoId}?t=${offset}`, timeStr: fmtOffset(offset) };
+    let link = null;
+    let timeStr = '';
+    if (hasVod) {
+      const offset = Math.max(0, wallEpoch - streamStart - TIMESTAMP_LEAD_SECONDS);
+      timeStr = fmtOffset(offset);
+      link = `https://www.youtube.com/watch?v=${videoId}&t=${offset}`;
+    }
+    byLifter[t.lifter_id].cells[key] = { weight: t.weight, link, timeStr };
     if (wallEpoch < byLifter[t.lifter_id].earliest) byLifter[t.lifter_id].earliest = wallEpoch;
     if (t.body_weight && !byLifter[t.lifter_id].bodyWeight) byLifter[t.lifter_id].bodyWeight = Number(t.body_weight);
   }
@@ -2869,7 +2881,10 @@ function recapHTML(meetId, meetName, videoId, streamStart, timestamps, meetDate)
       const cell = l.cells[c];
       if (!cell) return '<td class="cell empty">&mdash;</td>';
       const w = cell.weight ? cell.weight : '?';
-      return `<td class="cell"><a href="${escHtml(cell.link)}" target="_blank" title="${cell.timeStr}">${w}</a></td>`;
+      if (cell.link) {
+        return `<td class="cell"><a href="${escHtml(cell.link)}" target="_blank" title="${cell.timeStr}">${w}</a></td>`;
+      }
+      return `<td class="cell">${w}</td>`;
     }).join('');
     return `${separator}<tr class="lifter-row" data-name="${escHtml(l.name.toLowerCase())}" data-wc="${wc || ''}">
       <td class="lifter-name"><a href="https://www.openpowerlifting.org/u/${escHtml(l.name.toLowerCase().replace(/[^a-z]/g, ''))}" target="_blank" style="color:inherit;text-decoration:none;">${escHtml(l.name)}</a>${bwLabel}</td>
@@ -2877,7 +2892,7 @@ function recapHTML(meetId, meetName, videoId, streamStart, timestamps, meetDate)
     </tr>`;
   }).join('');
 
-  const videoLink = videoId ? `<p style="margin-bottom:1.25rem;"><a href="https://youtu.be/${escHtml(videoId)}" target="_blank" style="color:#3b82f6;font-weight:600;">Full VOD on YouTube &#x25B6;</a></p>` : '';
+  const videoLink = videoId ? `<p style="margin-bottom:1.25rem;"><a href="https://www.youtube.com/watch?v=${escHtml(videoId)}" target="_blank" style="color:#3b82f6;font-weight:600;">Full VOD on YouTube &#x25B6;</a></p>` : '';
 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Meet Recap - LiftAlert</title>
@@ -2967,16 +2982,20 @@ function filterLifters(q) {
 </body></html>`;
 }
 
-function recapListHTML(meetVideos, lifterMap) {
-  const cards = meetVideos.length === 0
+function recapListHTML(recapMeets, lifterMap) {
+  const cards = recapMeets.length === 0
     ? '<p style="color:#555;text-align:center;margin:2rem 0;">No meet recaps available yet.</p>'
-    : meetVideos.map(v => {
+    : recapMeets.map(v => {
       const lifters = (lifterMap && lifterMap[v.meet_id]) || [];
+      const hasVideo = !!v.youtube_video_id;
+      const vodBadge = hasVideo
+        ? '<span style="font-size:0.7rem;background:#1A2A1A;color:#4ADE80;border:1px solid #2D5A2D;border-radius:4px;padding:0.1rem 0.4rem;margin-left:0.5rem;">VOD</span>'
+        : '';
       return `<a href="/recap/${escHtml(v.meet_id)}" class="recap-card" data-name="${escHtml((v.meet_name || '').toLowerCase())}" data-lifters="${escHtml(lifters.join('|').toLowerCase())}" data-lifters-display="${escHtml(lifters.join('|'))}" style="display:block;text-decoration:none;color:inherit;">
         <div style="background:#141414;border:1px solid #1F1F1F;border-radius:12px;padding:1.25rem;margin-bottom:1rem;position:relative;overflow:hidden;">
           <div style="position:absolute;top:0;left:0;bottom:0;width:3px;background:#DC2626;"></div>
-          <h2 style="font-size:1.1rem;margin-bottom:0.25rem;">${escHtml(v.meet_name || v.meet_id)}</h2>
-          <p style="font-size:0.85rem;color:#555;">${v.meet_date ? escHtml(v.meet_date) + ' &middot; ' : ''}${lifters.length} lifters &middot; YouTube VOD linked</p>
+          <h2 style="font-size:1.1rem;margin-bottom:0.25rem;">${escHtml(v.meet_name || v.meet_id)}${vodBadge}</h2>
+          <p style="font-size:0.85rem;color:#555;">${v.meet_date ? escHtml(v.meet_date) + ' &middot; ' : ''}${lifters.length} lifters</p>
           <div class="matched-lifters"></div>
         </div>
       </a>`;
@@ -3002,7 +3021,7 @@ ${FONT_LINKS}
 </head><body><div class="container animate-in">
   <div class="nav"><a href="/">&larr; Back to <span class="brand" style="font-size:1rem;"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
   <div class="page-heading">MEET RECAPS</div>
-  <p class="subtitle" style="margin-bottom:1.25rem;">${meetVideos.length} meet${meetVideos.length !== 1 ? 's' : ''} with video</p>
+  <p class="subtitle" style="margin-bottom:1.25rem;">${recapMeets.length} meet recap${recapMeets.length !== 1 ? 's' : ''}</p>
   <input type="text" class="search-box" placeholder="Search lifters or meets..." oninput="filterRecaps(this.value)">
   ${cards}
 </div>
@@ -3552,9 +3571,9 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
     res.end(JSON.stringify(results));
 
   } else if (req.method === 'GET' && url.pathname === '/recaps') {
-    const [videos, lifterMap] = await Promise.all([getMeetVideos(), getRecapLifterNames()]);
+    const [recapMeets, lifterMap] = await Promise.all([getRecapMeets(), getRecapLifterNames()]);
     res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end(recapListHTML(videos, lifterMap));
+    res.end(recapListHTML(recapMeets, lifterMap));
 
   } else if (req.method === 'GET' && url.pathname.startsWith('/recap/')) {
     const recapMeetId = url.pathname.split('/')[2];
@@ -3566,15 +3585,17 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
         getMeetVideo(recapMeetId),
         getAttemptTimestampsByMeet(recapMeetId),
       ]);
-      if (!video) {
-        res.writeHead(404, { 'Content-Type': 'text/plain' });
-        res.end(`No video linked for meet ${recapMeetId}. Use meet_recap.js --set-video to link a YouTube VOD.`);
-      } else if (timestamps.length === 0) {
+      if (timestamps.length === 0) {
         res.writeHead(404, { 'Content-Type': 'text/plain' });
         res.end(`No attempt timestamps found for meet ${recapMeetId}.`);
       } else {
+        const videoId = video?.youtube_video_id || null;
+        const streamStart = video ? Number(video.stream_start_epoch) : 0;
+        const cachedMeet = meets[recapMeetId];
+        const meetName = video?.meet_name || cachedMeet?.meet?.name || recapMeetId;
+        const meetDate = video?.meet_date || cachedMeet?.meet?.date || '';
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(recapHTML(recapMeetId, video.meet_name, video.youtube_video_id, Number(video.stream_start_epoch), timestamps, video.meet_date));
+        res.end(recapHTML(recapMeetId, meetName, videoId, streamStart, timestamps, meetDate));
       }
     }
 

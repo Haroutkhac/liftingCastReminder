@@ -228,6 +228,19 @@ async function getRecapLifterNames() {
   return map;
 }
 
+async function getRecapMeets() {
+  const { rows } = await pool.query(
+    `SELECT t.meet_id,
+            MIN(t.wall_clock_time) as first_attempt,
+            v.youtube_video_id, v.youtube_url, v.stream_start_epoch, v.meet_name, v.meet_date
+     FROM attempt_timestamps t
+     LEFT JOIN meet_videos v ON t.meet_id = v.meet_id
+     GROUP BY t.meet_id, v.youtube_video_id, v.youtube_url, v.stream_start_epoch, v.meet_name, v.meet_date
+     ORDER BY first_attempt DESC`
+  );
+  return rows;
+}
+
 async function logEmail(recipient, emailType, subject, lifterName, meetId, success, errorMessage) {
   try {
     await pool.query(
@@ -263,6 +276,6 @@ module.exports = {
   initDB, getSubscriptions, getAllMeetIds, addSubscription, removeSubscription, getSubscriptionsByEmail,
   addPersistentSubscription, removePersistentSubscription, getPersistentSubscriptionsByEmail, getAllPersistentSubscriptions,
   getStats, logAttemptTimestamp, getAttemptTimestamps, getAttemptTimestampsByMeet,
-  setMeetVideo, getMeetVideo, getMeetVideos, getRecapLifterNames,
+  setMeetVideo, getMeetVideo, getMeetVideos, getRecapLifterNames, getRecapMeets,
   logEmail, getEmailStats,
 };
