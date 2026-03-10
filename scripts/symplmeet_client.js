@@ -139,6 +139,9 @@ function normalizeSymPlmeetData(meetId, data, meetState) {
 
   for (const l of allLifters) {
     const lid = `sl-${l.id || l.lifterId}`;
+    // Extract gender from category (e.g. "M-O-U" → "Male", "F-O-U" → "Female")
+    const catGender = (l.category || '').charAt(0) === 'F' ? 'Female'
+                    : (l.category || '').charAt(0) === 'M' ? 'Male' : null;
     const lifterObj = {
       _id: lid,
       name: [l.firstName || l.firstname, l.lastName || l.lastname].filter(Boolean).join(' ') || l.name || 'Unknown',
@@ -147,6 +150,8 @@ function normalizeSymPlmeetData(meetId, data, meetState) {
       flight: l.flight || 'A',
       platformId: 'sp-default',
       bodyWeight: l.bw || l.bodyWeight || l.bodyweight || null,
+      gender: catGender || l.gender || l.sex || null,
+      declaredWeightClass: l.class ? String(l.class) : null,
     };
 
     // Store pre-computed best lifts if available

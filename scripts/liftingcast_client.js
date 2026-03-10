@@ -121,14 +121,22 @@ function getMeetState(meetId) {
   return meets[meetId];
 }
 
-// --- IPF weight classes (kg) ---
-const WEIGHT_CLASSES = [47, 52, 57, 63, 69, 76, 83, 93, 105, 120, 140, 145];
-function getWeightClass(bw) {
+// --- IPF/USAPL weight classes (kg) by gender ---
+const WEIGHT_CLASSES_MALE   = [53, 59, 66, 74, 83, 93, 105, 120];
+const WEIGHT_CLASSES_FEMALE = [43, 47, 52, 57, 63, 69, 76, 84];
+function getWeightClass(bw, gender, declaredWc) {
+  // Use declared weight class from meet software if available
+  if (declaredWc) {
+    const n = Number(declaredWc);
+    return n > 0 ? n : declaredWc; // e.g. "120+" stays as string
+  }
   if (!bw) return null;
-  for (const wc of WEIGHT_CLASSES) {
+  const isFemale = gender && /^f/i.test(gender);
+  const classes = isFemale ? WEIGHT_CLASSES_FEMALE : WEIGHT_CLASSES_MALE;
+  for (const wc of classes) {
     if (bw <= wc) return wc;
   }
-  return '145+';
+  return isFemale ? '84+' : '120+';
 }
 
 // --- Compute lifter's best completed lifts from attempt docs ---
@@ -1144,6 +1152,12 @@ const FORM_HTML = `<!DOCTYPE html>
     const pillCount = document.getElementById('pillCount');
     const form = document.getElementById('subForm');
 
+    // Pre-fill email from localStorage
+    try {
+      const savedEmail = localStorage.getItem('liftalert_email');
+      if (savedEmail) document.getElementById('email').value = savedEmail;
+    } catch(e) {}
+
     let activeIdx = -1;
     let currentResults = [];
     let allLifters = [];
@@ -1170,6 +1184,7 @@ const FORM_HTML = `<!DOCTYPE html>
       }
       const email = document.getElementById('email').value;
       if (!email) return;
+      try { localStorage.setItem('liftalert_email', email); } catch(e) {}
       const btn = form.querySelector('button[type="submit"]');
       btn.disabled = true;
       btn.textContent = 'SUBSCRIBING...';
@@ -1447,6 +1462,13 @@ function meetsHTML(meetList, subscribedMeetIds) {
   const live = meetList.filter(m => !subSet.has(m.id) && m.isLive);
   const rest = meetList.filter(m => !subSet.has(m.id) && !m.isLive);
 
+
+  // Sort CANPL meets to top within each group
+  const canplFirst = (a, b) => (/canpl/i.test(b.name) ? 1 : 0) - (/canpl/i.test(a.name) ? 1 : 0);
+  subscribed.sort(canplFirst);
+  live.sort(canplFirst);
+  rest.sort(canplFirst);
+
   function renderCard(m) {
     const isLive = m.isLive;
     const isSub = subSet.has(m.id);
@@ -1472,7 +1494,7 @@ function meetsHTML(meetList, subscribedMeetIds) {
       ? `<div style="margin-top:0.5rem;"><a href="/live/${escHtml(m.id)}" class="watch-live-link" onclick="event.stopPropagation();" style="color:#22C55E;font-size:0.82rem;font-weight:600;">WATCH LIVE &rarr;</a></div>`
       : '';
 
-    return `<div class="meet-card" style="border-color:${borderColor};cursor:pointer;" onclick="window.location='/meets/${escHtml(m.id)}'" data-name="${escHtml(m.name.toLowerCase())}" data-lifters="${escHtml((m.lifterNames || []).join('|').toLowerCase())}">
+    return `<div class="meet-card" style="border-color:${borderColor};cursor:pointer;" onclick="window.location='/meets/${escHtml(m.id)}'" data-name="${escHtml(m.name.toLowerCase())}" data-lifters="${escHtml((m.lifterNames || []).join('|').toLowerCase())}" data-lifters-display="${escHtml((m.lifterNames || []).join('|'))}">
       <div style="position:absolute;top:0;left:0;bottom:0;width:3px;background:${accentColor};"></div>
       <div class="meet-card-header">
         <h2 class="meet-card-title">${escHtml(m.name)}</h2>
@@ -1481,6 +1503,7 @@ function meetsHTML(meetList, subscribedMeetIds) {
       <p class="meet-card-meta">${meta}</p>
       ${statusLine}
       ${liveLink}
+      <div class="matched-lifters"></div>
     </div>`;
   }
 
@@ -1532,6 +1555,9 @@ ${FONT_LINKS}
   .badge .pulse-dot { width: 5px; height: 5px; border-radius: 50%; background: #22C55E; animation: pulse 2s ease-in-out infinite; display: inline-block; }
   .meet-card-meta { font-size: 0.82rem; color: #666; margin: 0; }
   .meet-status { font-size: 0.82rem; margin-top: 0.4rem; }
+  .matched-lifters { font-size: 0.8rem; color: #DC2626; margin-top: 0.5rem; line-height: 1.5; }
+  .matched-lifters:empty { display: none; }
+  .matched-lifters span { display: inline-block; background: #1A0A0A; border: 1px solid #3B1111; border-radius: 4px; padding: 0.1rem 0.4rem; margin: 0.15rem 0.2rem 0.15rem 0; font-size: 0.75rem; }
 </style>
 </head><body><div class="container animate-in">
   <div class="nav"><a href="/">&larr; Back to <span class="brand" style="font-size:1rem;"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
@@ -1542,6 +1568,19 @@ ${FONT_LINKS}
   ${subscribedSection}${liveSection}${restSection}${empty}
 </div>
 <script>
+// Auto-redirect with email from localStorage if not already in URL
+(function() {
+  try {
+    var email = new URLSearchParams(window.location.search).get('email');
+    if (!email) {
+      var saved = localStorage.getItem('liftalert_email');
+      if (saved) {
+        window.location.replace('/meets?email=' + encodeURIComponent(saved));
+        return;
+      }
+    }
+  } catch(e) {}
+})();
 let lifterIndex = null;
 async function loadLifterIndex() {
   if (lifterIndex) return lifterIndex;
@@ -1600,7 +1639,7 @@ async function searchMeets(q) {
 }
 
 // --- Meet detail page (scoresheet table like recaps) ---
-function meetDetailHTML(meetId, meetState, subscribedLifterNames) {
+function meetDetailHTML(meetId, meetState, subscribedLifterNames, videoData, timestamps) {
   const subNameSet = new Set((subscribedLifterNames || []).map(n => n.toLowerCase()));
   const meetDoc = meetState.meet || {};
   const meetName = meetDoc.name || meetId;
@@ -1608,15 +1647,38 @@ function meetDetailHTML(meetId, meetState, subscribedLifterNames) {
   const locationStr = meetDoc.location || meetDoc.city || '';
   const meta = [dateStr, locationStr].filter(Boolean).join(' &middot; ');
 
+  // Build VOD timestamp lookup: lifterId+liftName → best (highest weight) timestamp link
+  const LIFT_KEY_MAP = { squat: 'sq', bench: 'bp', dead: 'dl', deadlift: 'dl' };
+  const vodLinks = {}; // key: `${lifterName.toLowerCase()}:${sq|bp|dl}` → YouTube URL
+  if (videoData && timestamps && timestamps.length > 0) {
+    const streamStart = Number(videoData.stream_start_epoch);
+    const videoId = videoData.youtube_video_id;
+    // Group timestamps by lifter+lift, pick the highest weight attempt
+    const bestByLifterLift = {};
+    for (const t of timestamps) {
+      const liftKey = LIFT_KEY_MAP[t.lift_name] || t.lift_name;
+      const key = `${t.lifter_name.toLowerCase()}:${liftKey}`;
+      const w = Number(t.weight) || 0;
+      if (!bestByLifterLift[key] || w > bestByLifterLift[key].weight) {
+        bestByLifterLift[key] = { weight: w, wallEpoch: Math.floor(new Date(t.wall_clock_time).getTime() / 1000) };
+      }
+    }
+    for (const [key, val] of Object.entries(bestByLifterLift)) {
+      const offset = Math.max(0, val.wallEpoch - streamStart - TIMESTAMP_LEAD_SECONDS);
+      vodLinks[key] = `https://youtu.be/${videoId}?t=${offset}`;
+    }
+  }
+
   // Build lifter rows with best lifts
   const lifters = Object.values(meetState.lifters).filter(l => l.name).map(l => {
     const bests = computeLifterBests(meetState, l._id);
     const total = bests.squat + bests.bench + bests.dead;
+    const nameLower = (l.name || '').toLowerCase();
     return {
       id: l._id,
       name: l.name,
       bodyWeight: l.bodyWeight || null,
-      weightClass: getWeightClass(l.bodyWeight),
+      weightClass: getWeightClass(l.bodyWeight, l.gender, l.declaredWeightClass),
       flight: l.flight || '',
       session: l.session || 1,
       team: l.team || '',
@@ -1624,7 +1686,10 @@ function meetDetailHTML(meetId, meetState, subscribedLifterNames) {
       bestBp: bests.bench || null,
       bestDl: bests.dead || null,
       total: total || null,
-      isSubscribed: subNameSet.has((l.name || '').toLowerCase()),
+      isSubscribed: subNameSet.has(nameLower),
+      vodSq: vodLinks[`${nameLower}:sq`] || null,
+      vodBp: vodLinks[`${nameLower}:bp`] || null,
+      vodDl: vodLinks[`${nameLower}:dl`] || null,
     };
   });
 
@@ -1677,10 +1742,10 @@ function meetDetailHTML(meetId, meetState, subscribedLifterNames) {
   const hasTotal = lifters.some(l => l.total);
 
   const colDefs = [
-    ...(hasSq ? [{ key: 'bestSq', label: 'SQ', group: 'SQUAT' }] : []),
-    ...(hasBp ? [{ key: 'bestBp', label: 'BP', group: 'BENCH' }] : []),
-    ...(hasDl ? [{ key: 'bestDl', label: 'DL', group: 'DEADLIFT' }] : []),
-    ...(hasTotal ? [{ key: 'total', label: 'TOT', group: null }] : []),
+    ...(hasSq ? [{ key: 'bestSq', label: 'SQ', group: 'SQUAT', vodKey: 'vodSq' }] : []),
+    ...(hasBp ? [{ key: 'bestBp', label: 'BP', group: 'BENCH', vodKey: 'vodBp' }] : []),
+    ...(hasDl ? [{ key: 'bestDl', label: 'DL', group: 'DEADLIFT', vodKey: 'vodDl' }] : []),
+    ...(hasTotal ? [{ key: 'total', label: 'TOT', group: null, vodKey: null }] : []),
   ];
 
   const headerRow = colDefs.map(c =>
@@ -1703,6 +1768,10 @@ function meetDetailHTML(meetId, meetState, subscribedLifterNames) {
       const val = l[c.key];
       if (!val) return '<td class="cell empty">&mdash;</td>';
       const isTotalCol = c.key === 'total';
+      const vodUrl = c.vodKey ? l[c.vodKey] : null;
+      if (vodUrl) {
+        return `<td class="cell"><a href="${escHtml(vodUrl)}" target="_blank" style="color:#BBB;text-decoration:underline;text-decoration-color:#333;text-underline-offset:2px;">${val}</a></td>`;
+      }
       const style = isTotalCol ? ' style="font-weight:600;color:#F0F0F0;"' : '';
       return `<td class="cell"${style}>${val}</td>`;
     }).join('');
@@ -2066,7 +2135,7 @@ function recapHTML(meetId, meetName, videoId, streamStart, timestamps, meetDate)
   let lastWc = null;
   const bodyRows = lifters.map((l, i) => {
     let separator = '';
-    const wc = getWeightClass(l.bodyWeight);
+    const wc = getWeightClass(l.bodyWeight, null, null);
     if (wc !== lastWc) {
       lastWc = wc;
       const wcLabel = wc ? `${wc} kg` : 'Unknown';
@@ -2180,11 +2249,12 @@ function recapListHTML(meetVideos, lifterMap) {
     ? '<p style="color:#555;text-align:center;margin:2rem 0;">No meet recaps available yet.</p>'
     : meetVideos.map(v => {
       const lifters = (lifterMap && lifterMap[v.meet_id]) || [];
-      return `<a href="/recap/${escHtml(v.meet_id)}" class="recap-card" data-name="${escHtml((v.meet_name || '').toLowerCase())}" data-lifters="${escHtml(lifters.join('|').toLowerCase())}" style="display:block;text-decoration:none;color:inherit;">
-        <div style="background:#141414;border:1px solid #1F1F1F;border-radius:12px;padding:1.25rem;margin-bottom:1rem;position:relative;overflow:hidden;transition:border-color 0.2s;">
+      return `<a href="/recap/${escHtml(v.meet_id)}" class="recap-card" data-name="${escHtml((v.meet_name || '').toLowerCase())}" data-lifters="${escHtml(lifters.join('|').toLowerCase())}" data-lifters-display="${escHtml(lifters.join('|'))}" style="display:block;text-decoration:none;color:inherit;">
+        <div style="background:#141414;border:1px solid #1F1F1F;border-radius:12px;padding:1.25rem;margin-bottom:1rem;position:relative;overflow:hidden;">
           <div style="position:absolute;top:0;left:0;bottom:0;width:3px;background:#DC2626;"></div>
           <h2 style="font-size:1.1rem;margin-bottom:0.25rem;">${escHtml(v.meet_name || v.meet_id)}</h2>
           <p style="font-size:0.85rem;color:#555;">${v.meet_date ? escHtml(v.meet_date) + ' &middot; ' : ''}${lifters.length} lifters &middot; YouTube VOD linked</p>
+          <div class="matched-lifters"></div>
         </div>
       </a>`;
     }).join('');
@@ -2202,6 +2272,9 @@ ${FONT_LINKS}
   .page-heading { font-family: 'Bebas Neue', sans-serif; font-size: 1.75rem; letter-spacing: 0.06em; margin-bottom: 0.25rem; }
   .search-box { width: 100%; padding: 0.6rem 0.85rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.85rem; font-family: 'Outfit', sans-serif; margin-bottom: 1.25rem; box-sizing: border-box; }
   .search-box:focus { outline: none; border-color: #DC2626; box-shadow: 0 0 0 3px rgba(220,38,38,0.1); }
+  .matched-lifters { font-size: 0.8rem; color: #DC2626; margin-top: 0.5rem; line-height: 1.5; }
+  .matched-lifters:empty { display: none; }
+  .matched-lifters span { display: inline-block; background: #1A0A0A; border: 1px solid #3B1111; border-radius: 4px; padding: 0.1rem 0.4rem; margin: 0.15rem 0.2rem 0.15rem 0; font-size: 0.75rem; }
 </style>
 </head><body><div class="container animate-in">
   <div class="nav"><a href="/">&larr; Back to <span class="brand" style="font-size:1rem;"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
@@ -2213,12 +2286,21 @@ ${FONT_LINKS}
 <script>
 function filterRecaps(q) {
   const cards = document.querySelectorAll('.recap-card');
-  if (!q || q.length < 2) { cards.forEach(c => c.style.display = ''); return; }
-  const lower = q.toLowerCase();
+  const lower = (q || '').trim().toLowerCase();
   cards.forEach(c => {
+    const ml = c.querySelector('.matched-lifters');
+    if (!lower || lower.length < 2) { c.style.display = ''; ml.innerHTML = ''; return; }
     const name = c.dataset.name || '';
-    const lifters = c.dataset.lifters || '';
-    c.style.display = (name.includes(lower) || lifters.includes(lower)) ? '' : 'none';
+    const nameMatch = name.includes(lower);
+    const lifterList = (c.dataset.liftersDisplay || '').split('|').filter(Boolean);
+    const matched = lifterList.filter(n => n.toLowerCase().includes(lower));
+    if (nameMatch || matched.length > 0) {
+      c.style.display = '';
+      ml.innerHTML = matched.length > 0 ? matched.map(n => '<span>' + n.replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c])) + '</span>').join('') : '';
+    } else {
+      c.style.display = 'none';
+      ml.innerHTML = '';
+    }
   });
 }
 </script>
@@ -2686,16 +2768,29 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
       res.end('Meet not found');
     } else {
       let subscribedLifterNames = [];
+      let videoData = null;
+      let timestamps = [];
+      const fetches = [];
       if (email) {
-        try {
-          const subs = await getSubscriptionsByEmail(email);
-          subscribedLifterNames = subs.filter(s => s.meet_id === detailMeetId).map(s => s.lifter_name);
-        } catch (err) {
-          console.error(`[MEET DETAIL] Error fetching subscriptions: ${err.message}`);
-        }
+        fetches.push(
+          getSubscriptionsByEmail(email)
+            .then(subs => { subscribedLifterNames = subs.filter(s => s.meet_id === detailMeetId).map(s => s.lifter_name); })
+            .catch(err => console.error(`[MEET DETAIL] Error fetching subscriptions: ${err.message}`))
+        );
       }
+      fetches.push(
+        getMeetVideo(detailMeetId)
+          .then(v => { videoData = v; })
+          .catch(() => {})
+      );
+      fetches.push(
+        getAttemptTimestampsByMeet(detailMeetId)
+          .then(ts => { timestamps = ts; })
+          .catch(() => {})
+      );
+      await Promise.all(fetches);
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(meetDetailHTML(detailMeetId, meets[detailMeetId], subscribedLifterNames));
+      res.end(meetDetailHTML(detailMeetId, meets[detailMeetId], subscribedLifterNames, videoData, timestamps));
     }
 
   } else if (req.method === 'GET' && url.pathname === '/api/lifters') {
@@ -2778,7 +2873,7 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
         return {
           name: l.name,
           bodyWeight: l.bodyWeight || null,
-          weightClass: getWeightClass(l.bodyWeight),
+          weightClass: getWeightClass(l.bodyWeight, l.gender, l.declaredWeightClass),
           bestSq: bests.squat || null,
           bestBp: bests.bench || null,
           bestDl: bests.dead || null,
