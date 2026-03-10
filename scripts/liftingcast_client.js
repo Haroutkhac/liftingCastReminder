@@ -1882,7 +1882,7 @@ ${FONT_LINKS}
   <div class="nav"><a href="/meets">&larr; All meets</a></div>
   <div class="page-heading">${escHtml(meetName)}</div>
   ${meta ? `<p class="subtitle" style="margin-bottom:0.5rem;">${meta}</p>` : ''}
-  <p style="font-size:0.85rem;color:#555;margin-bottom:1rem;">${lifters.length} lifter${lifters.length !== 1 ? 's' : ''} &middot; ${Object.keys(meetState.platforms).length} platform${Object.keys(meetState.platforms).length !== 1 ? 's' : ''}${meets[meetId] ? ` &middot; <a href="/live/${escHtml(meetId)}" style="color:#22C55E;font-weight:600;">LIVE SCOREBOARD &rarr;</a>` : ''}</p>
+  <p style="font-size:0.85rem;color:#555;margin-bottom:1rem;">${lifters.length} lifter${lifters.length !== 1 ? 's' : ''} &middot; ${Object.keys(meetState.platforms).length} platform${Object.keys(meetState.platforms).length !== 1 ? 's' : ''}${watchingMeets.has(meetId) && meetState.lastChangeTime > 0 && (Date.now() - meetState.lastChangeTime) < 30 * 60 * 1000 ? ` &middot; <a href="/live/${escHtml(meetId)}" style="color:#22C55E;font-weight:600;">LIVE SCOREBOARD &rarr;</a>` : ''}</p>
   ${platformHTML ? `<div style="margin-bottom:1rem;">${platformHTML}</div>` : ''}
   ${!liftingStarted ? '<p style="font-size:0.82rem;color:#555;margin-bottom:1rem;">Lifting hasn\'t started yet &mdash; results will appear as attempts are recorded.</p>' : ''}
   <input type="text" class="filter-input" placeholder="Search lifters..." oninput="filterLifters(this.value)">
