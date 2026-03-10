@@ -28,7 +28,8 @@ const http = require('http');
 const https = require('https');
 const { initDB, getSubscriptions, getAllMeetIds, addSubscription, removeSubscription, getSubscriptionsByEmail,
         addPersistentSubscription, removePersistentSubscription, getPersistentSubscriptionsByEmail, getAllPersistentSubscriptions,
-        getStats, logAttemptTimestamp, getAttemptTimestampsByMeet, getMeetVideo, getMeetVideos, setMeetVideo } = require('./db');
+        getStats, logAttemptTimestamp, getAttemptTimestampsByMeet, getMeetVideo, getMeetVideos, setMeetVideo,
+        getRecapLifterNames, getEmailStats } = require('./db');
 const { sendOnDeckEmail, sendSubscriptionConfirmation, sendAutoSubscribeNotification, sendRecapEmail } = require('./email');
 const { getMeetPlatform, loadSymPlmeetMeet, watchSymPlmeet, stopSymPlmeet,
         stopAllSymPlmeet, discoverTodaysSymPlmeetMeets, normalizeSymPlmeetData } = require('./symplmeet_client');
@@ -1060,7 +1061,7 @@ const FORM_HTML = `<!DOCTYPE html>
   <style>
     ${SHARED_STYLES}
     body { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1.5rem 1rem; min-height: 100vh; gap: 1.25rem; }
-    .help { font-size: 0.72rem; color: #555; margin-top: 0.35rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .help { font-size: 0.72rem; color: #555; margin-top: 0.35rem; }
     .autocomplete-wrapper { position: relative; }
     .suggestions { position: absolute; top: 100%; left: 0; right: 0; background: #141414; border: 1px solid #252525; border-top: none; border-radius: 0 0 8px 8px; max-height: 240px; overflow-y: auto; z-index: 10; display: none; }
     .suggestion-item { padding: 0.55rem 0.85rem; cursor: pointer; transition: background 0.15s; }
@@ -1423,27 +1424,43 @@ ${FONT_LINKS}
 </div></body></html>`;
 }
 
+function formatMeetDate(dateStr, dateFormat) {
+  if (!dateStr) return '';
+  const parts = dateStr.split('/');
+  if (parts.length !== 3) return dateStr;
+  const fmt = dateFormat || 'MM/DD/YYYY';
+  let y, mo, d;
+  if (fmt === 'DD/MM/YYYY') { [d, mo, y] = parts; }
+  else { [mo, d, y] = parts; }
+  const date = new Date(Number(y), Number(mo) - 1, Number(d));
+  if (isNaN(date.getTime())) return dateStr;
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  return `${days[date.getDay()]}, ${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
+}
+
 function meetsHTML(meetList, subscribedMeetIds) {
   const subSet = new Set(subscribedMeetIds || []);
 
-  // Partition into subscribed vs rest
+  // Partition into 3 groups: subscribed, live (not subscribed), rest
   const subscribed = meetList.filter(m => subSet.has(m.id));
-  const rest = meetList.filter(m => !subSet.has(m.id));
+  const live = meetList.filter(m => !subSet.has(m.id) && m.isLive);
+  const rest = meetList.filter(m => !subSet.has(m.id) && !m.isLive);
 
   function renderCard(m) {
-    const isLive = m.watching;
+    const isLive = m.isLive;
     const isSub = subSet.has(m.id);
     const borderColor = isLive ? '#22C55E' : isSub ? '#DC2626' : '#1F1F1F';
-    const accentColor = isLive ? '#22C55E' : '#DC2626';
+    const accentColor = isLive ? '#22C55E' : isSub ? '#DC2626' : '#333';
     const badge = isLive
       ? '<span class="badge badge-live"><span class="pulse-dot"></span>Live</span>'
       : '';
     const subBadge = isSub
       ? '<span class="badge badge-sub">Subscribed</span>'
       : '';
-    const dateStr = m.date ? escHtml(m.date) : '';
+    const formattedDate = formatMeetDate(m.date, m.dateFormat);
     const locationStr = m.location ? escHtml(m.location) : '';
-    const meta = [dateStr, locationStr, `${m.lifterCount} lifters`].filter(Boolean).join(' &middot; ');
+    const meta = [formattedDate ? escHtml(formattedDate) : '', locationStr, `${m.lifterCount} lifters`].filter(Boolean).join(' &middot; ');
 
     // Current status line for live meets
     let statusLine = '';
@@ -1451,7 +1468,11 @@ function meetsHTML(meetList, subscribedMeetIds) {
       statusLine = `<div class="meet-status"><span style="color:#F0F0F0;font-weight:500;">${escHtml(m.currentLift.lifter)}</span> <span style="color:#666;">&mdash; ${escHtml(m.currentLift.liftName || '')} attempt ${escHtml(String(m.currentLift.attemptNumber || ''))}</span></div>`;
     }
 
-    return `<a href="/meets/${escHtml(m.id)}" class="meet-card" style="border-color:${borderColor};">
+    const liveLink = isLive
+      ? `<div style="margin-top:0.5rem;"><a href="/live/${escHtml(m.id)}" class="watch-live-link" onclick="event.stopPropagation();" style="color:#22C55E;font-size:0.82rem;font-weight:600;">WATCH LIVE &rarr;</a></div>`
+      : '';
+
+    return `<div class="meet-card" style="border-color:${borderColor};cursor:pointer;" onclick="window.location='/meets/${escHtml(m.id)}'" data-name="${escHtml(m.name.toLowerCase())}" data-lifters="${escHtml((m.lifterNames || []).join('|').toLowerCase())}">
       <div style="position:absolute;top:0;left:0;bottom:0;width:3px;background:${accentColor};"></div>
       <div class="meet-card-header">
         <h2 class="meet-card-title">${escHtml(m.name)}</h2>
@@ -1459,14 +1480,18 @@ function meetsHTML(meetList, subscribedMeetIds) {
       </div>
       <p class="meet-card-meta">${meta}</p>
       ${statusLine}
-    </a>`;
+      ${liveLink}
+    </div>`;
   }
 
   const subscribedSection = subscribed.length > 0
-    ? `<div class="section-label">YOUR MEETS</div>${subscribed.map(renderCard).join('')}`
+    ? `<div class="section-label section-group">YOUR MEETS</div>${subscribed.map(renderCard).join('')}`
+    : '';
+  const liveSection = live.length > 0
+    ? `<div class="section-label section-group" style="margin-top:1.5rem;">LIVE NOW</div>${live.map(renderCard).join('')}`
     : '';
   const restSection = rest.length > 0
-    ? `${subscribed.length > 0 ? '<div class="section-label" style="margin-top:1.5rem;">ALL MEETS</div>' : ''}${rest.map(renderCard).join('')}`
+    ? `<div class="section-label section-group" style="margin-top:1.5rem;">ALL MEETS</div>${rest.map(renderCard).join('')}`
     : '';
   const empty = meetList.length === 0
     ? '<p style="color:#555;text-align:center;margin:2rem 0;">No meets currently indexed.</p>'
@@ -1484,6 +1509,13 @@ ${FONT_LINKS}
   .nav a:hover { color: #F0F0F0; }
   .page-heading { font-family: 'Bebas Neue', sans-serif; font-size: 1.75rem; letter-spacing: 0.06em; margin-bottom: 0.25rem; }
   .section-label { font-size: 0.7rem; color: #666; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 600; margin-bottom: 0.6rem; }
+  .search-box { width: 100%; padding: 0.6rem 0.85rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.85rem; font-family: 'Outfit', sans-serif; margin-bottom: 1.25rem; box-sizing: border-box; }
+  .search-box:focus { outline: none; border-color: #DC2626; box-shadow: 0 0 0 3px rgba(220,38,38,0.1); }
+  .search-results { margin-bottom: 1.25rem; }
+  .search-result { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 0.85rem; background: #141414; border: 1px solid #1F1F1F; border-radius: 8px; margin-bottom: 0.4rem; text-decoration: none; color: inherit; transition: border-color 0.2s; }
+  .search-result:hover { border-color: #DC2626; }
+  .search-result-name { font-size: 0.9rem; font-weight: 500; }
+  .search-result-meet { font-size: 0.75rem; color: #666; }
   .meet-card {
     display: block; text-decoration: none; color: inherit;
     background: #141414; border: 1px solid #1F1F1F; border-radius: 12px;
@@ -1505,8 +1537,66 @@ ${FONT_LINKS}
   <div class="nav"><a href="/">&larr; Back to <span class="brand" style="font-size:1rem;"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
   <div class="page-heading">ALL MEETS</div>
   <p class="subtitle" style="margin-bottom:1.25rem;">${meetList.length} meet${meetList.length !== 1 ? 's' : ''} currently indexed</p>
-  ${subscribedSection}${restSection}${empty}
-</div></body></html>`;
+  <input type="text" class="search-box" placeholder="Search lifters or meets..." oninput="searchMeets(this.value)">
+  <div class="search-results" id="searchResults" style="display:none;"></div>
+  ${subscribedSection}${liveSection}${restSection}${empty}
+</div>
+<script>
+let lifterIndex = null;
+async function loadLifterIndex() {
+  if (lifterIndex) return lifterIndex;
+  try {
+    const res = await fetch('/api/lifters');
+    lifterIndex = await res.json();
+  } catch (e) { lifterIndex = []; }
+  return lifterIndex;
+}
+async function searchMeets(q) {
+  const container = document.getElementById('searchResults');
+  const cards = document.querySelectorAll('.meet-card');
+  const labels = document.querySelectorAll('.section-group');
+  if (!q || q.length < 2) {
+    container.style.display = 'none';
+    container.innerHTML = '';
+    cards.forEach(c => c.style.display = '');
+    labels.forEach(l => l.style.display = '');
+    return;
+  }
+  const lower = q.toLowerCase();
+  // Filter meet cards
+  cards.forEach(c => {
+    const name = c.dataset.name || '';
+    const lifters = c.dataset.lifters || '';
+    c.style.display = (name.includes(lower) || lifters.includes(lower)) ? '' : 'none';
+  });
+  // Hide section labels if all their cards are hidden
+  labels.forEach(l => {
+    let next = l.nextElementSibling;
+    let anyVisible = false;
+    while (next && !next.classList.contains('section-group')) {
+      if (next.classList.contains('meet-card') && next.style.display !== 'none') anyVisible = true;
+      next = next.nextElementSibling;
+    }
+    l.style.display = anyVisible ? '' : 'none';
+  });
+  // Search lifters
+  const lifters = await loadLifterIndex();
+  const matches = lifters.filter(l => l.name.toLowerCase().includes(lower)).slice(0, 10);
+  if (matches.length > 0) {
+    container.style.display = '';
+    function esc(s) { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c])); }
+    container.innerHTML = '<div class="section-label" style="margin-bottom:0.4rem;">LIFTERS</div>' + matches.map(l => {
+      const escaped = esc(l.name);
+      return '<a href="/meets/' + encodeURIComponent(l.meetId) + '" class="search-result"><div><div class="search-result-name">' +
+        escaped + '</div><div class="search-result-meet">' + esc(l.meetName || l.meetId) + '</div></div></a>';
+    }).join('');
+  } else {
+    container.style.display = 'none';
+    container.innerHTML = '';
+  }
+}
+</script>
+</body></html>`;
 }
 
 // --- Meet detail page (scoresheet table like recaps) ---
@@ -1664,7 +1754,7 @@ ${FONT_LINKS}
   <div class="nav"><a href="/meets">&larr; All meets</a></div>
   <div class="page-heading">${escHtml(meetName)}</div>
   ${meta ? `<p class="subtitle" style="margin-bottom:0.5rem;">${meta}</p>` : ''}
-  <p style="font-size:0.85rem;color:#555;margin-bottom:1rem;">${lifters.length} lifter${lifters.length !== 1 ? 's' : ''} &middot; ${Object.keys(meetState.platforms).length} platform${Object.keys(meetState.platforms).length !== 1 ? 's' : ''}</p>
+  <p style="font-size:0.85rem;color:#555;margin-bottom:1rem;">${lifters.length} lifter${lifters.length !== 1 ? 's' : ''} &middot; ${Object.keys(meetState.platforms).length} platform${Object.keys(meetState.platforms).length !== 1 ? 's' : ''}${watchingMeets.has(meetId) && platformStatuses.some(p => p.currentLifter) ? ` &middot; <a href="/live/${escHtml(meetId)}" style="color:#22C55E;font-weight:600;">WATCH LIVE &rarr;</a>` : ''}</p>
   ${platformHTML ? `<div style="margin-bottom:1rem;">${platformHTML}</div>` : ''}
   ${!liftingStarted ? '<p style="font-size:0.82rem;color:#555;margin-bottom:1rem;">Lifting hasn\'t started yet &mdash; results will appear as attempts are recorded.</p>' : ''}
   <input type="text" class="filter-input" placeholder="Search lifters..." oninput="filterLifters(this.value)">
@@ -1696,6 +1786,219 @@ function filterLifters(q) {
     s.style.display = (!lower || visibleWcs.has(wcText)) ? '' : 'none';
   });
 }
+</script>
+</body></html>`;
+}
+
+function liveHTML(meetId, meetName) {
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${escHtml(meetName)} LIVE - LiftAlert</title>
+${FONT_LINKS}
+<style>
+  ${SHARED_STYLES}
+  body { padding: 1.5rem 0.75rem; }
+  .container { max-width: 700px; margin: 0 auto; }
+  .nav { margin-bottom: 1.5rem; font-size: 0.85rem; }
+  .nav a { color: #777; }
+  .nav a:hover { color: #F0F0F0; }
+  .page-heading { font-family: 'Bebas Neue', sans-serif; font-size: 1.75rem; letter-spacing: 0.06em; margin-bottom: 0.25rem; display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+  .live-badge { display: inline-flex; align-items: center; gap: 0.35rem; background: #22C55E; color: #fff; font-size: 0.7rem; font-family: 'Outfit', sans-serif; font-weight: 600; padding: 0.2rem 0.6rem; border-radius: 4px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .live-badge .pulse-dot { width: 6px; height: 6px; background: #fff; border-radius: 50%; animation: pulse 1.5s infinite; }
+  .yt-link { font-size: 0.85rem; font-family: 'Outfit', sans-serif; color: #3b82f6; font-weight: 500; }
+  .yt-link:hover { color: #60a5fa; }
+  .hero { background: #141414; border: 1px solid #1F1F1F; border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem; text-align: center; }
+  .hero-label { font-size: 0.68rem; color: #666; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.3rem; }
+  .hero-name { font-family: 'Bebas Neue', sans-serif; font-size: 2rem; letter-spacing: 0.04em; color: #F0F0F0; }
+  .hero-detail { font-size: 0.9rem; color: #777; margin-top: 0.15rem; }
+  .hero-weight { font-size: 1.5rem; font-weight: 700; color: #DC2626; margin-top: 0.25rem; }
+  .queue-section { margin-bottom: 1.25rem; }
+  .queue-label { font-size: 0.68rem; color: #666; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.5rem; font-weight: 600; }
+  .queue-item { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0.75rem; background: #0D0D0D; border: 1px solid #1A1A1A; border-radius: 8px; margin-bottom: 0.35rem; font-size: 0.88rem; }
+  .queue-pos { color: #555; font-size: 0.75rem; font-weight: 600; min-width: 1.2rem; }
+  .queue-name { color: #CCC; font-weight: 500; }
+  .queue-name a { color: #CCC; }
+  .queue-name a:hover { color: #DC2626; }
+  .queue-detail { color: #555; font-size: 0.82rem; margin-left: auto; white-space: nowrap; }
+  .scoresheet { width: 100%; border-collapse: collapse; }
+  .scoresheet th { position: sticky; top: 0; background: #0A0A0A; z-index: 2; }
+  .scoresheet .lifter-name {
+    position: sticky; left: 0; background: #0A0A0A; z-index: 1;
+    padding: 0.5rem 0.75rem; white-space: nowrap; font-weight: 500; font-size: 0.85rem;
+    border-bottom: 1px solid #1A1A1A; border-right: 2px solid #252525;
+    max-width: 180px; overflow: hidden; text-overflow: ellipsis;
+  }
+  .scoresheet .lifter-name a { color: inherit; }
+  .scoresheet .lifter-name a:hover { color: #DC2626; }
+  .scoresheet .cell { text-align: center; padding: 0.45rem 0.3rem; border-bottom: 1px solid #1A1A1A; font-size: 0.85rem; color: #BBB; }
+  .scoresheet .cell.empty { color: #333; }
+  .scoresheet .lifter-row:hover td { background: #141414; }
+  .scoresheet .lifter-row:hover .lifter-name { background: #141414; }
+  .table-wrap { overflow-x: auto; border: 1px solid #1F1F1F; border-radius: 12px; background: #0A0A0A; }
+  .filter-input { width: 100%; max-width: 300px; padding: 0.5rem 0.75rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.85rem; font-family: 'Outfit', sans-serif; margin-bottom: 1rem; }
+  .filter-input:focus { outline: none; border-color: #DC2626; box-shadow: 0 0 0 3px rgba(220,38,38,0.1); }
+  .updated-ago { font-size: 0.75rem; color: #444; margin-top: 0.5rem; text-align: center; }
+  .empty-state { text-align: center; padding: 2rem 1rem; color: #555; }
+  @media (max-width: 600px) {
+    .scoresheet .lifter-name { font-size: 0.75rem; padding: 0.4rem 0.5rem; max-width: 120px; }
+    .scoresheet .cell { padding: 0.35rem 0.15rem; font-size: 0.75rem; }
+    .hero-name { font-size: 1.5rem; }
+  }
+</style>
+</head><body><div class="container animate-in">
+  <div class="nav"><a href="/meets/${escHtml(meetId)}">&larr; Meet details</a></div>
+  <div class="page-heading">${escHtml(meetName)} <span class="live-badge"><span class="pulse-dot"></span>LIVE</span></div>
+  <div id="yt-link-wrap"></div>
+  <div id="hero" class="hero"><div class="empty-state">Loading...</div></div>
+  <div id="queue" class="queue-section"></div>
+  <div style="font-size:0.72rem;color:#666;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem;font-weight:600;">SCORESHEET</div>
+  <input type="text" class="filter-input" placeholder="Search lifters..." oninput="filterLifters(this.value)">
+  <div id="scoresheet"></div>
+  <div id="updated" class="updated-ago"></div>
+  <div style="text-align:center;margin-top:1.5rem;">
+    <a href="/" style="display:inline-block;padding:0.6rem 1.5rem;background:#DC2626;color:white;border-radius:8px;font-family:'Bebas Neue',sans-serif;font-size:1rem;letter-spacing:0.1em;transition:background 0.2s;">SUBSCRIBE TO A LIFTER</a>
+  </div>
+</div>
+<script>
+const MEET_ID = '${escHtml(meetId)}';
+const LIFT_LABEL = { squat: 'SQ', bench: 'BP', dead: 'DL', deadlift: 'DL' };
+let lastData = null;
+
+function opLink(name) {
+  const slug = name.toLowerCase().replace(/[^a-z]/g, '');
+  return 'https://www.openpowerlifting.org/u/' + slug;
+}
+
+function renderHero(data) {
+  const el = document.getElementById('hero');
+  if (!data.platforms || data.platforms.length === 0) {
+    el.innerHTML = '<div class="empty-state">Waiting for meet to start...</div>';
+    return;
+  }
+  const parts = data.platforms.map(p => {
+    if (!p.current) return '';
+    const label = LIFT_LABEL[p.current.liftName] || p.current.liftName || '';
+    return '<div class="hero-label">' + (p.name || 'Platform') + ' &mdash; NOW LIFTING</div>' +
+      '<div class="hero-name"><a href="' + opLink(p.current.lifterName) + '" target="_blank" style="color:inherit;text-decoration:none;">' + esc(p.current.lifterName) + '</a></div>' +
+      '<div class="hero-detail">' + label + ' attempt ' + (p.current.attemptNumber || '') + '</div>' +
+      (p.current.weight ? '<div class="hero-weight">' + p.current.weight + ' kg</div>' : '');
+  }).filter(Boolean);
+  el.innerHTML = parts.length ? parts.join('<hr style="border:none;border-top:1px solid #252525;margin:0.75rem 0;">') : '<div class="empty-state">No active lifter</div>';
+}
+
+function renderQueue(data) {
+  const el = document.getElementById('queue');
+  if (!data.platforms) { el.innerHTML = ''; return; }
+  const parts = data.platforms.map(p => {
+    if (!p.queue || p.queue.length === 0) return '';
+    const items = p.queue.slice(0, 8).map((q, i) => {
+      const label = LIFT_LABEL[q.liftName] || '';
+      const posLabels = ['ON DECK', 'IN HOLE'];
+      const posLabel = i < 2 ? '<span style="color:' + (i === 0 ? '#22C55E' : '#EAB308') + ';font-size:0.68rem;font-weight:600;">' + posLabels[i] + '</span> ' : '';
+      return '<div class="queue-item">' +
+        '<span class="queue-pos">' + (i + 1) + '</span>' +
+        '<span class="queue-name">' + posLabel + '<a href="' + opLink(q.lifterName) + '" target="_blank">' + esc(q.lifterName) + '</a></span>' +
+        '<span class="queue-detail">' + label + q.attemptNumber + ' &middot; ' + (q.weight || '?') + 'kg</span>' +
+        '</div>';
+    }).join('');
+    const title = data.platforms.length > 1 ? '<div class="queue-label">UP NEXT &mdash; ' + esc(p.name || 'Platform') + '</div>' : '<div class="queue-label">UP NEXT</div>';
+    return title + items;
+  }).filter(Boolean);
+  el.innerHTML = parts.join('');
+}
+
+function renderScoresheet(data) {
+  const el = document.getElementById('scoresheet');
+  if (!data.lifters || data.lifters.length === 0) {
+    el.innerHTML = '<div class="empty-state">No lifter data yet</div>';
+    return;
+  }
+  const lifters = data.lifters;
+  const hasSq = lifters.some(l => l.bestSq);
+  const hasBp = lifters.some(l => l.bestBp);
+  const hasDl = lifters.some(l => l.bestDl);
+  const hasTotal = lifters.some(l => l.total);
+  const cols = [];
+  if (hasSq) cols.push({ key: 'bestSq', label: 'SQ' });
+  if (hasBp) cols.push({ key: 'bestBp', label: 'BP' });
+  if (hasDl) cols.push({ key: 'bestDl', label: 'DL' });
+  if (hasTotal) cols.push({ key: 'total', label: 'TOT' });
+  if (cols.length === 0) {
+    el.innerHTML = '<div class="empty-state">Lifting hasn\\'t started yet &mdash; results will appear as attempts are recorded.</div>';
+    return;
+  }
+  const totalCols = cols.length + 1;
+  const hdr = cols.map(c => '<th style="text-align:center;min-width:52px;padding:0.35rem 0.3rem;font-size:0.65rem;">' + c.label + '</th>').join('');
+  let lastWc = null;
+  const rows = lifters.map(l => {
+    let sep = '';
+    if (l.weightClass !== lastWc) {
+      lastWc = l.weightClass;
+      const wcLabel = l.weightClass ? (typeof l.weightClass === 'number' ? l.weightClass + ' kg' : l.weightClass) : 'Unknown';
+      sep = '<tr class="wc-separator"><td colspan="' + totalCols + '" style="padding:0.6rem 0.75rem 0.3rem;font-size:0.7rem;color:#DC2626;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;border-bottom:2px solid #252525;background:#0F0F0F;">' + wcLabel + '</td></tr>';
+    }
+    const bwLabel = l.bodyWeight ? ' <span style="color:#555;font-size:0.72rem;font-weight:300;">' + l.bodyWeight + '</span>' : '';
+    const cells = cols.map(c => {
+      const val = l[c.key];
+      if (!val) return '<td class="cell empty">&mdash;</td>';
+      const isTot = c.key === 'total';
+      return '<td class="cell"' + (isTot ? ' style="font-weight:600;color:#F0F0F0;"' : '') + '>' + val + '</td>';
+    }).join('');
+    return sep + '<tr class="lifter-row" data-name="' + esc(l.name.toLowerCase()) + '" data-wc="' + (l.weightClass || '') + '">' +
+      '<td class="lifter-name"><a href="' + opLink(l.name) + '" target="_blank">' + esc(l.name) + '</a>' + bwLabel + '</td>' +
+      cells + '</tr>';
+  }).join('');
+  el.innerHTML = '<div class="table-wrap"><table class="scoresheet"><thead><tr>' +
+    '<th style="text-align:left;padding:0.35rem 0.75rem;font-size:0.65rem;border-bottom:2px solid #252525;border-right:2px solid #252525;">LIFTER</th>' + hdr +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+function renderYT(data) {
+  const el = document.getElementById('yt-link-wrap');
+  if (data.video && data.video.youtubeVideoId) {
+    el.innerHTML = '<p style="margin-bottom:1rem;"><a class="yt-link" href="https://youtu.be/' + esc(data.video.youtubeVideoId) + '" target="_blank">&#x25B6; Watch on YouTube</a></p>';
+  } else {
+    el.innerHTML = '';
+  }
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function filterLifters(q) {
+  const rows = document.querySelectorAll('.lifter-row');
+  const seps = document.querySelectorAll('.wc-separator');
+  const lower = q.toLowerCase();
+  const visibleWcs = new Set();
+  rows.forEach(r => {
+    const show = r.dataset.name.includes(lower);
+    r.style.display = show ? '' : 'none';
+    if (show && r.dataset.wc) visibleWcs.add(String(r.dataset.wc));
+  });
+  seps.forEach(s => {
+    const wcText = s.textContent.trim().replace(' kg','');
+    s.style.display = (!lower || visibleWcs.has(wcText)) ? '' : 'none';
+  });
+}
+
+async function poll() {
+  try {
+    const res = await fetch('/api/meet/' + MEET_ID + '/live');
+    if (!res.ok) return;
+    const data = await res.json();
+    lastData = data;
+    renderHero(data);
+    renderQueue(data);
+    renderScoresheet(data);
+    renderYT(data);
+    document.getElementById('updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) { /* retry next cycle */ }
+}
+
+poll();
+setInterval(poll, 5000);
 </script>
 </body></html>`;
 }
@@ -1872,15 +2175,16 @@ function filterLifters(q) {
 </body></html>`;
 }
 
-function recapListHTML(meetVideos) {
+function recapListHTML(meetVideos, lifterMap) {
   const cards = meetVideos.length === 0
     ? '<p style="color:#555;text-align:center;margin:2rem 0;">No meet recaps available yet.</p>'
     : meetVideos.map(v => {
-      return `<a href="/recap/${escHtml(v.meet_id)}" style="display:block;text-decoration:none;color:inherit;">
+      const lifters = (lifterMap && lifterMap[v.meet_id]) || [];
+      return `<a href="/recap/${escHtml(v.meet_id)}" class="recap-card" data-name="${escHtml((v.meet_name || '').toLowerCase())}" data-lifters="${escHtml(lifters.join('|').toLowerCase())}" style="display:block;text-decoration:none;color:inherit;">
         <div style="background:#141414;border:1px solid #1F1F1F;border-radius:12px;padding:1.25rem;margin-bottom:1rem;position:relative;overflow:hidden;transition:border-color 0.2s;">
           <div style="position:absolute;top:0;left:0;bottom:0;width:3px;background:#DC2626;"></div>
           <h2 style="font-size:1.1rem;margin-bottom:0.25rem;">${escHtml(v.meet_name || v.meet_id)}</h2>
-          <p style="font-size:0.85rem;color:#555;">${v.meet_date ? escHtml(v.meet_date) + ' &middot; ' : ''}YouTube VOD linked</p>
+          <p style="font-size:0.85rem;color:#555;">${v.meet_date ? escHtml(v.meet_date) + ' &middot; ' : ''}${lifters.length} lifters &middot; YouTube VOD linked</p>
         </div>
       </a>`;
     }).join('');
@@ -1896,13 +2200,29 @@ ${FONT_LINKS}
   .nav a { color: #777; }
   .nav a:hover { color: #F0F0F0; }
   .page-heading { font-family: 'Bebas Neue', sans-serif; font-size: 1.75rem; letter-spacing: 0.06em; margin-bottom: 0.25rem; }
+  .search-box { width: 100%; padding: 0.6rem 0.85rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.85rem; font-family: 'Outfit', sans-serif; margin-bottom: 1.25rem; box-sizing: border-box; }
+  .search-box:focus { outline: none; border-color: #DC2626; box-shadow: 0 0 0 3px rgba(220,38,38,0.1); }
 </style>
 </head><body><div class="container animate-in">
   <div class="nav"><a href="/">&larr; Back to <span class="brand" style="font-size:1rem;"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
   <div class="page-heading">MEET RECAPS</div>
-  <p class="subtitle" style="margin-bottom:1.5rem;">${meetVideos.length} meet${meetVideos.length !== 1 ? 's' : ''} with video</p>
+  <p class="subtitle" style="margin-bottom:1.25rem;">${meetVideos.length} meet${meetVideos.length !== 1 ? 's' : ''} with video</p>
+  <input type="text" class="search-box" placeholder="Search lifters or meets..." oninput="filterRecaps(this.value)">
   ${cards}
-</div></body></html>`;
+</div>
+<script>
+function filterRecaps(q) {
+  const cards = document.querySelectorAll('.recap-card');
+  if (!q || q.length < 2) { cards.forEach(c => c.style.display = ''); return; }
+  const lower = q.toLowerCase();
+  cards.forEach(c => {
+    const name = c.dataset.name || '';
+    const lifters = c.dataset.lifters || '';
+    c.style.display = (name.includes(lower) || lifters.includes(lower)) ? '' : 'none';
+  });
+}
+</script>
+</body></html>`;
 }
 
 function mySubscriptionsHTML(email, subs, persistentSubs) {
@@ -2232,8 +2552,9 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
   } else if (url.pathname === '/stats') {
     try {
       const stats = await getStats();
+      const emailStats = await getEmailStats();
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(stats, null, 2));
+      res.end(JSON.stringify({ ...stats, email: emailStats }, null, 2));
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: err.message }));
@@ -2326,15 +2647,22 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
             }
           }
         }
+        // Determine if meet is live: date is today AND has active platform activity
+        const meetIsToday = meetDoc.date ? isMeetToday(meetDoc) : false;
+        const isLive = meetIsToday && currentLift !== null;
+        // Collect lifter names for search filtering
+        const lifterNames = Object.values(st.lifters).map(l => l.name).filter(Boolean);
         meetList.push({
           id: mid,
           name: meetDoc.name || mid,
           date: meetDoc.date || '',
+          dateFormat: meetDoc.dateFormat || 'MM/DD/YYYY',
           location: meetDoc.location || meetDoc.city || '',
           lifterCount,
           platformCount,
-          watching: watchingMeets.has(mid),
+          isLive,
           currentLift,
+          lifterNames,
         });
       }
       // Sort chronologically, newest first
@@ -2386,9 +2714,9 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
     res.end(JSON.stringify(results));
 
   } else if (req.method === 'GET' && url.pathname === '/recaps') {
-    const videos = await getMeetVideos();
+    const [videos, lifterMap] = await Promise.all([getMeetVideos(), getRecapLifterNames()]);
     res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end(recapListHTML(videos));
+    res.end(recapListHTML(videos, lifterMap));
 
   } else if (req.method === 'GET' && url.pathname.startsWith('/recap/')) {
     const recapMeetId = url.pathname.split('/')[2];
@@ -2410,6 +2738,84 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(recapHTML(recapMeetId, video.meet_name, video.youtube_video_id, Number(video.stream_start_epoch), timestamps, video.meet_date));
       }
+    }
+
+  } else if (req.method === 'GET' && url.pathname.match(/^\/api\/meet\/[^/]+\/live$/)) {
+    const liveMeetId = url.pathname.split('/')[3];
+    const st = meets[liveMeetId];
+    if (!st) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Meet not found' }));
+    } else {
+      const meetDoc = st.meet || {};
+      const platforms = Object.entries(st.platforms).map(([pid, platform]) => {
+        const parsed = parseAttemptId(platform.currentAttemptId);
+        const currentLifter = parsed ? st.lifters[parsed.lifterId] : null;
+        const currentAttempt = parsed && platform.currentAttemptId ? st.attempts[platform.currentAttemptId] : null;
+        const order = computeAttemptOrder(st, pid);
+        const currentIdx = platform.currentAttemptId ? order.findIndex(a => a.attemptId === platform.currentAttemptId) : -1;
+        const queue = currentIdx >= 0 ? order.slice(currentIdx + 1, currentIdx + 9) : order.slice(0, 8);
+        return {
+          id: pid,
+          name: platform.name || pid,
+          current: currentLifter ? {
+            lifterName: currentLifter.name || 'Unknown',
+            liftName: parsed.liftName,
+            attemptNumber: parsed.attemptNumber,
+            weight: currentAttempt?.weight || null,
+          } : null,
+          queue: queue.map(a => ({
+            lifterName: a.lifterName,
+            liftName: a.liftName,
+            attemptNumber: a.attemptNumber,
+            weight: a.weight,
+          })),
+        };
+      });
+      const lifters = Object.values(st.lifters).filter(l => l.name).map(l => {
+        const bests = computeLifterBests(st, l._id);
+        const total = bests.squat + bests.bench + bests.dead;
+        return {
+          name: l.name,
+          bodyWeight: l.bodyWeight || null,
+          weightClass: getWeightClass(l.bodyWeight),
+          bestSq: bests.squat || null,
+          bestBp: bests.bench || null,
+          bestDl: bests.dead || null,
+          total: total || null,
+        };
+      });
+      lifters.sort((a, b) => {
+        const wcA = typeof a.weightClass === 'number' ? a.weightClass : 9999;
+        const wcB = typeof b.weightClass === 'number' ? b.weightClass : 9999;
+        if (wcA !== wcB) return wcA - wcB;
+        const bwA = a.bodyWeight || 9999;
+        const bwB = b.bodyWeight || 9999;
+        if (bwA !== bwB) return bwA - bwB;
+        return a.name.localeCompare(b.name);
+      });
+      let video = null;
+      try { video = await getMeetVideo(liveMeetId); } catch (e) { /* ignore */ }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        meet: { name: meetDoc.name || liveMeetId, date: meetDoc.date || '' },
+        watching: watchingMeets.has(liveMeetId),
+        platforms,
+        lifters,
+        video: video ? { youtubeVideoId: video.youtube_video_id } : null,
+      }));
+    }
+
+  } else if (req.method === 'GET' && url.pathname.match(/^\/live\/[^/]+$/)) {
+    const liveMeetId = url.pathname.split('/')[2];
+    const st = meets[liveMeetId];
+    if (!st) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Meet not found');
+    } else {
+      const meetName = st.meet?.name || liveMeetId;
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(liveHTML(liveMeetId, meetName));
     }
 
   } else {

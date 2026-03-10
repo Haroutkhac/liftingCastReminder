@@ -3,6 +3,7 @@
  * Rate-limits to avoid duplicate emails (10-min TTL per recipient+lifter+position key).
  */
 const { Resend } = require('resend');
+const { logEmail } = require('./db');
 
 let resend = null;
 const fromEmail = process.env.RESEND_FROM || 'onboarding@resend.dev';
@@ -103,9 +104,11 @@ async function sendOnDeckEmail(toEmail, lifterName, meetName, liftName, position
     });
     recentlySent.set(dedupKey, Date.now());
     console.log(`[EMAIL] Sent "${positionLabel}" alert to ${toEmail} for ${lifterName}`);
+    logEmail(toEmail, 'on-deck', `LiftAlert: ${lifterName} is ${positionLabel}`, lifterName, meetId, true);
     return true;
   } catch (err) {
     console.error(`[EMAIL ERROR] Failed to send to ${toEmail}: ${err.message}`);
+    logEmail(toEmail, 'on-deck', `LiftAlert: ${lifterName} is ${positionLabel}`, lifterName, meetId, false, err.message);
     return false;
   }
 }
@@ -152,9 +155,11 @@ async function sendSubscriptionConfirmation(toEmail, lifterName, meetName, meetD
       `,
     });
     console.log(`[EMAIL] Sent subscription confirmation to ${toEmail} for ${lifterName}`);
+    logEmail(toEmail, 'confirmation', `LiftAlert: Subscription confirmed for ${lifterName}`, lifterName, meetId, true);
     return true;
   } catch (err) {
     console.error(`[EMAIL ERROR] Failed to send confirmation to ${toEmail}: ${err.message}`);
+    logEmail(toEmail, 'confirmation', `LiftAlert: Subscription confirmed for ${lifterName}`, lifterName, meetId, false, err.message);
     return false;
   }
 }
@@ -190,9 +195,11 @@ async function sendAutoSubscribeNotification(toEmail, lifterName, meetName, meet
       `,
     });
     console.log(`[EMAIL] Sent auto-subscribe notification to ${toEmail} for ${lifterName} at ${meetName}`);
+    logEmail(toEmail, 'auto-subscribe', `LiftAlert: ${lifterName} is competing at ${meetName}`, lifterName, meetId, true);
     return true;
   } catch (err) {
     console.error(`[EMAIL ERROR] Failed to send auto-subscribe notification to ${toEmail}: ${err.message}`);
+    logEmail(toEmail, 'auto-subscribe', `LiftAlert: ${lifterName} is competing at ${meetName}`, lifterName, meetId, false, err.message);
     return false;
   }
 }
@@ -244,9 +251,11 @@ async function sendRecapEmail(toEmail, lifterName, meetName, attempts, videoId, 
       `,
     });
     console.log(`[EMAIL] Sent recap to ${toEmail} for ${lifterName}`);
+    logEmail(toEmail, 'recap', `LiftAlert Recap: ${lifterName} at ${meetName}`, lifterName, null, true);
     return true;
   } catch (err) {
     console.error(`[EMAIL ERROR] Failed to send recap to ${toEmail}: ${err.message}`);
+    logEmail(toEmail, 'recap', `LiftAlert Recap: ${lifterName} at ${meetName}`, lifterName, null, false, err.message);
     return false;
   }
 }

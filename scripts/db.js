@@ -72,6 +72,19 @@ async function initDB() {
     )
   `);
   await pool.query(`ALTER TABLE meet_videos ADD COLUMN IF NOT EXISTS meet_date TEXT`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS email_log (
+      id SERIAL PRIMARY KEY,
+      recipient TEXT NOT NULL,
+      email_type TEXT NOT NULL,
+      subject TEXT,
+      lifter_name TEXT,
+      meet_id TEXT,
+      success BOOLEAN NOT NULL,
+      error_message TEXT,
+      sent_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS notify_prefs TEXT DEFAULT 'in-the-hole'`);
   await pool.query(`ALTER TABLE persistent_subscriptions ADD COLUMN IF NOT EXISTS notify_prefs TEXT DEFAULT 'in-the-hole'`);
   console.log('[DB] All tables ready');
@@ -203,9 +216,51 @@ async function getMeetVideos() {
   return rows;
 }
 
+async function getRecapLifterNames() {
+  const { rows } = await pool.query(
+    `SELECT meet_id, ARRAY_AGG(DISTINCT lifter_name) as lifter_names
+     FROM attempt_timestamps GROUP BY meet_id`
+  );
+  const map = {};
+  for (const r of rows) map[r.meet_id] = r.lifter_names || [];
+  return map;
+}
+
+async function logEmail(recipient, emailType, subject, lifterName, meetId, success, errorMessage) {
+  try {
+    await pool.query(
+      `INSERT INTO email_log (recipient, email_type, subject, lifter_name, meet_id, success, error_message)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [recipient, emailType, subject || null, lifterName || null, meetId || null, success, errorMessage || null]
+    );
+  } catch (err) {
+    console.error('[DB] Failed to log email:', err.message);
+  }
+}
+
+async function getEmailStats() {
+  const today = await pool.query(
+    `SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE success) as sent, COUNT(*) FILTER (WHERE NOT success) as failed
+     FROM email_log WHERE sent_at >= CURRENT_DATE`
+  );
+  const byType = await pool.query(
+    `SELECT email_type, COUNT(*) as total FROM email_log WHERE sent_at >= CURRENT_DATE GROUP BY email_type ORDER BY total DESC`
+  );
+  const byDay = await pool.query(
+    `SELECT sent_at::date as day, COUNT(*) as total, COUNT(*) FILTER (WHERE success) as sent
+     FROM email_log GROUP BY sent_at::date ORDER BY day DESC LIMIT 30`
+  );
+  return {
+    today: today.rows[0],
+    byType: byType.rows,
+    byDay: byDay.rows,
+  };
+}
+
 module.exports = {
   initDB, getSubscriptions, getAllMeetIds, addSubscription, removeSubscription, getSubscriptionsByEmail,
   addPersistentSubscription, removePersistentSubscription, getPersistentSubscriptionsByEmail, getAllPersistentSubscriptions,
   getStats, logAttemptTimestamp, getAttemptTimestamps, getAttemptTimestampsByMeet,
-  setMeetVideo, getMeetVideo, getMeetVideos,
+  setMeetVideo, getMeetVideo, getMeetVideos, getRecapLifterNames,
+  logEmail, getEmailStats,
 };
