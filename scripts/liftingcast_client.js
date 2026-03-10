@@ -661,6 +661,10 @@ function isMeetReady(meetId) {
   if (getMeetPlatform(meetId) === 'symplmeet') return true; // always ready
   const st = meets[meetId];
   if (!st || !st.meet) return true; // if we can't tell, assume ready
+  // If any platform has a current attempt or any attempts have results, meet is active
+  const hasActivity = Object.values(st.platforms).some(p => p.currentAttemptId) ||
+    Object.values(st.attempts).some(a => a.result === 'good' || a.result === 'bad');
+  if (hasActivity) return true;
   const meetDate = parseMeetDate(st.meet);
   if (!meetDate) return true; // no date info, assume ready
   const today = new Date();
@@ -1871,7 +1875,7 @@ ${FONT_LINKS}
   <div class="nav"><a href="/meets">&larr; All meets</a></div>
   <div class="page-heading">${escHtml(meetName)}</div>
   ${meta ? `<p class="subtitle" style="margin-bottom:0.5rem;">${meta}</p>` : ''}
-  <p style="font-size:0.85rem;color:#555;margin-bottom:1rem;">${lifters.length} lifter${lifters.length !== 1 ? 's' : ''} &middot; ${Object.keys(meetState.platforms).length} platform${Object.keys(meetState.platforms).length !== 1 ? 's' : ''}${watchingMeets.has(meetId) && platformStatuses.some(p => p.currentLifter) ? ` &middot; <a href="/live/${escHtml(meetId)}" style="color:#22C55E;font-weight:600;">WATCH LIVE &rarr;</a>` : ''}</p>
+  <p style="font-size:0.85rem;color:#555;margin-bottom:1rem;">${lifters.length} lifter${lifters.length !== 1 ? 's' : ''} &middot; ${Object.keys(meetState.platforms).length} platform${Object.keys(meetState.platforms).length !== 1 ? 's' : ''}${meets[meetId] ? ` &middot; <a href="/live/${escHtml(meetId)}" style="color:#22C55E;font-weight:600;">LIVE SCOREBOARD &rarr;</a>` : ''}</p>
   ${platformHTML ? `<div style="margin-bottom:1rem;">${platformHTML}</div>` : ''}
   ${!liftingStarted ? '<p style="font-size:0.82rem;color:#555;margin-bottom:1rem;">Lifting hasn\'t started yet &mdash; results will appear as attempts are recorded.</p>' : ''}
   <input type="text" class="filter-input" placeholder="Search lifters..." oninput="filterLifters(this.value)">
@@ -2758,15 +2762,6 @@ document.addEventListener('keydown', function(e) {
       // Toggle hypothetical / what-if mode
       document.getElementById('hypo-btn').click();
       break;
-    case '1': case '2': case '3': case '4': case '5':
-      // Quick sort: 1=wc, 2=total, 3=dots, 4=name
-      const sortMap = { '1': 'wc', '2': 'total', '3': 'dots', '4': 'name' };
-      if (sortMap[e.key]) {
-        currentSort = sortMap[e.key];
-        document.getElementById('sort-by').value = currentSort;
-        if (lastData) renderScoreboard(lastData);
-      }
-      break;
     case '/':
       e.preventDefault();
       document.getElementById('search-input').focus();
@@ -3474,9 +3469,9 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
             }
           }
         }
-        // Determine if meet is live: date is today AND has active platform activity
-        const meetIsToday = meetDoc.date ? isMeetToday(meetDoc) : false;
-        const isLive = meetIsToday && currentLift !== null;
+        // Determine if meet is live: platform has a current lifter OR attempts have results
+        const hasResults = Object.values(st.attempts).some(a => a.result === 'good' || a.result === 'bad');
+        const isLive = currentLift !== null || hasResults;
         // Collect lifter names for search filtering
         const lifterNames = Object.values(st.lifters).map(l => l.name).filter(Boolean);
         meetList.push({
