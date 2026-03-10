@@ -337,7 +337,7 @@ async function sendMeetRecaps(meetId) {
         const wallEpoch = Math.floor(new Date(t.wall_clock_time).getTime() / 1000);
         let youtubeLink = null;
         let timeFormatted = '';
-        if (videoId && streamStart) {
+        if (videoId && streamStart > 0) {
           const offset = Math.max(0, wallEpoch - streamStart - TIMESTAMP_LEAD_SECONDS);
           const h = Math.floor(offset / 3600);
           const m = Math.floor((offset % 3600) / 60);
@@ -2077,7 +2077,7 @@ function recapHTML(meetId, meetName, videoId, streamStart, timestamps, meetDate)
   }
 
   // Group by lifter, build cell map
-  const hasVod = videoId && streamStart;
+  const hasVod = videoId && streamStart > 0;
   const byLifter = {};
   for (const t of timestamps) {
     if (!byLifter[t.lifter_id]) byLifter[t.lifter_id] = { name: t.lifter_name, cells: {}, earliest: Infinity, bodyWeight: null };
@@ -2852,8 +2852,9 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
       } else {
         const videoId = video?.youtube_video_id || null;
         const streamStart = video ? Number(video.stream_start_epoch) : 0;
-        const meetName = video?.meet_name || getMeetState(recapMeetId).meet?.name || recapMeetId;
-        const meetDate = video?.meet_date || getMeetState(recapMeetId).meet?.date || '';
+        const cachedMeet = meets[recapMeetId];
+        const meetName = video?.meet_name || cachedMeet?.meet?.name || recapMeetId;
+        const meetDate = video?.meet_date || cachedMeet?.meet?.date || '';
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(recapHTML(recapMeetId, meetName, videoId, streamStart, timestamps, meetDate));
       }

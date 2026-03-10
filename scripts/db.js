@@ -230,7 +230,6 @@ async function getRecapMeets() {
   const { rows } = await pool.query(
     `SELECT t.meet_id,
             MIN(t.wall_clock_time) as first_attempt,
-            COUNT(*) as attempt_count,
             v.youtube_video_id, v.youtube_url, v.stream_start_epoch, v.meet_name, v.meet_date
      FROM attempt_timestamps t
      LEFT JOIN meet_videos v ON t.meet_id = v.meet_id
