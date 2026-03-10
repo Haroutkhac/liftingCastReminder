@@ -2113,6 +2113,7 @@ ${FONT_LINKS}
     <select id="wc-filter" class="filter-select"><option value="">All Classes</option></select>
     <div class="controls-right">
       <select id="sort-by" class="filter-select">
+        <option value="order">Sort: Attempt Order</option>
         <option value="wc">Sort: Weight Class</option>
         <option value="total">Sort: Total</option>
         <option value="dots">Sort: DOTS</option>
@@ -2138,7 +2139,7 @@ const MEET_ID = '${escHtml(meetId)}';
 const LIFT_LABEL = { squat: 'SQ', bench: 'BP', dead: 'DL', deadlift: 'DL' };
 let lastData = null;
 let currentFilters = { search: '', session: '', flight: '', wc: '', platform: '' };
-let currentSort = 'wc';
+let currentSort = 'order';
 
 
 
@@ -2386,6 +2387,9 @@ function populateFilters(data) {
 function sortLifters(lifters, sortBy) {
   const copy = [...lifters];
   switch (sortBy) {
+    case 'order':
+      copy.sort((a, b) => (a.orderPosition ?? 9999) - (b.orderPosition ?? 9999) || a.name.localeCompare(b.name));
+      break;
     case 'total':
       copy.sort((a, b) => (b.total || 0) - (a.total || 0) || a.name.localeCompare(b.name));
       break;
@@ -3714,6 +3718,24 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
         if (bwA !== bwB) return bwA - bwB;
         return a.name.localeCompare(b.name);
       });
+
+      // Compute attempt order position per lifter (for "order" sort on client)
+      // Merge attempt orders from all platforms into a single position map
+      const orderPositionMap = {}; // lifterId -> position (0-based)
+      for (const [pid, platform] of Object.entries(st.platforms)) {
+        const order = computeAttemptOrder(st, pid);
+        const currentIdx = platform.currentAttemptId ? order.findIndex(a => a.attemptId === platform.currentAttemptId) : -1;
+        const fullOrder = currentIdx >= 0 ? order.slice(currentIdx) : order;
+        for (let i = 0; i < fullOrder.length; i++) {
+          const lid = fullOrder[i].lifterId;
+          if (!(lid in orderPositionMap) || i < orderPositionMap[lid]) {
+            orderPositionMap[lid] = i;
+          }
+        }
+      }
+      for (const l of lifters) {
+        l.orderPosition = orderPositionMap[l.id] !== undefined ? orderPositionMap[l.id] : 9999;
+      }
 
       // Compute placement within weight class (gender-specific)
       const byWc = {};
