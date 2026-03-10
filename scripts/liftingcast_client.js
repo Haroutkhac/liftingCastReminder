@@ -1953,7 +1953,7 @@ ${FONT_LINKS}
   .hero-queue-row { display: flex; gap: 0.75rem; margin-bottom: 1rem; }
 
   /* Hero / current lifter section */
-  .hero { background: #141414; border: 1px solid #1F1F1F; border-radius: 12px; padding: 1.25rem; text-align: center; flex: 1; min-width: 0; }
+  .hero { background: #141414; border: 1px solid #1F1F1F; border-radius: 12px; padding: 0.75rem; text-align: center; flex: 1; min-width: 0; }
   .hero-label { font-size: 0.68rem; color: #666; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.3rem; }
   .hero-name { font-family: 'Bebas Neue', sans-serif; font-size: 2rem; letter-spacing: 0.04em; color: #F0F0F0; }
   .hero-detail { font-size: 0.9rem; color: #777; margin-top: 0.15rem; }
@@ -2317,7 +2317,7 @@ function renderQueue(data) {
   if (!data.platforms) { el.innerHTML = ''; return; }
   const parts = data.platforms.map(p => {
     if (!p.queue || p.queue.length === 0) return '';
-    const items = p.queue.slice(0, 6).map((q, i) => {
+    const items = p.queue.slice(0, 4).map((q, i) => {
       const label = LIFT_LABEL[q.liftName] || '';
       const posLabels = ['ON DECK', 'IN HOLE'];
       const posLabel = i < 2 ? '<span style="color:' + (i === 0 ? '#22C55E' : '#EAB308') + ';font-size:0.68rem;font-weight:600;">' + posLabels[i] + '</span> ' : '';
