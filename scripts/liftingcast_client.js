@@ -1945,8 +1945,8 @@ ${FONT_LINKS}
   .live-badge { display: inline-flex; align-items: center; gap: 0.35rem; background: #22C55E; color: #fff; font-size: 0.7rem; font-family: 'Outfit', sans-serif; font-weight: 600; padding: 0.2rem 0.6rem; border-radius: 4px; letter-spacing: 0.08em; text-transform: uppercase; }
   .live-badge .pulse-dot { width: 6px; height: 6px; background: #fff; border-radius: 50%; animation: pulse 1.5s infinite; }
   .not-live-badge { display: inline-flex; align-items: center; gap: 0.35rem; background: #555; color: #fff; font-size: 0.7rem; font-family: 'Outfit', sans-serif; font-weight: 600; padding: 0.2rem 0.6rem; border-radius: 4px; letter-spacing: 0.08em; text-transform: uppercase; }
-  .yt-link { font-size: 0.85rem; font-family: 'Outfit', sans-serif; color: #3b82f6; font-weight: 500; }
-  .yt-link:hover { color: #60a5fa; }
+  .yt-link { font-size: 0.85rem; font-family: 'Outfit', sans-serif; color: #DC2626; font-weight: 500; }
+  .yt-link:hover { color: #EF4444; }
 
   /* Hero / current lifter section */
   .hero { background: #141414; border: 1px solid #1F1F1F; border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem; text-align: center; }
