@@ -234,7 +234,7 @@ async function sendRecapEmail(toEmail, lifterName, meetName, attempts, videoId, 
       html: `
         <h2>Meet Recap: ${lifterName}</h2>
         <p><strong>${meetName}</strong>${meetDate ? ` &mdash; ${meetDate}` : ''}</p>
-        ${videoId ? `<p><a href="https://youtu.be/${videoId}" style="color:#3b82f6;font-weight:600;">Full VOD on YouTube</a></p>` : ''}
+        ${videoId ? `<p><a href="https://www.youtube.com/watch?v=${videoId}" style="color:#3b82f6;font-weight:600;">Full VOD on YouTube</a></p>` : ''}
         <table style="border-collapse:collapse;margin:16px 0;width:100%;">
           <thead>
             <tr style="text-align:left;">

@@ -194,7 +194,7 @@ async function main() {
     try {
       const videoId = execSync(`yt-dlp "ytsearch1:${meetId}" --print id --no-download 2>/dev/null`, { encoding: 'utf8' }).trim();
       if (videoId) {
-        videoUrl = `https://youtu.be/${videoId}`;
+        videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
         console.log(`Found: ${videoUrl}\n`);
       }
     } catch (err) {
@@ -231,7 +231,7 @@ async function main() {
       const offset = Math.max(0, wallEpoch - effectiveStart - TIMESTAMP_LEAD_SECONDS);
       const w = a.weight ? ` @ ${a.weight}kg` : '';
       const timeStr = formatTime(offset);
-      const ytLink = videoId ? `https://youtu.be/${videoId}?t=${offset}` : `offset: ${timeStr}`;
+      const ytLink = videoId ? `https://www.youtube.com/watch?v=${videoId}&t=${offset}` : `offset: ${timeStr}`;
       console.log(`  ${a.lift_name} attempt ${a.attempt_number}${w} — ${timeStr}  ${ytLink}`);
     }
 

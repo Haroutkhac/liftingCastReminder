@@ -343,7 +343,7 @@ async function sendMeetRecaps(meetId) {
           const m = Math.floor((offset % 3600) / 60);
           const s = Math.floor(offset % 60);
           timeFormatted = h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
-          youtubeLink = `https://youtu.be/${videoId}?t=${offset}`;
+          youtubeLink = `https://www.youtube.com/watch?v=${videoId}&t=${offset}`;
         }
         return {
           lift_name: t.lift_name,
@@ -1015,8 +1015,8 @@ async function autoLinkYouTubeVideo(meetId, meetName, meetDate) {
   }
 
   try {
-    await setMeetVideo(meetId, videoId, `https://youtu.be/${videoId}`, streamStart || 0, meetName, meetDate);
-    console.log(`[YT] Auto-linked meet ${meetId} -> https://youtu.be/${videoId}${streamStart ? ` (start: ${new Date(streamStart * 1000).toISOString()})` : ' (no stream start — VOD only)'}`);
+    await setMeetVideo(meetId, videoId, `https://www.youtube.com/watch?v=${videoId}`, streamStart || 0, meetName, meetDate);
+    console.log(`[YT] Auto-linked meet ${meetId} -> https://www.youtube.com/watch?v=${videoId}${streamStart ? ` (start: ${new Date(streamStart * 1000).toISOString()})` : ' (no stream start — VOD only)'}`);
   } catch (err) {
     console.error(`[YT DB ERROR] ${err.message}`);
   }
@@ -1641,7 +1641,7 @@ function meetDetailHTML(meetId, meetState, subscribedLifterNames, videoData, tim
     }
     for (const [key, val] of Object.entries(bestByLifterLift)) {
       const offset = Math.max(0, val.wallEpoch - streamStart - TIMESTAMP_LEAD_SECONDS);
-      vodLinks[key] = `https://youtu.be/${videoId}?t=${offset}`;
+      vodLinks[key] = `https://www.youtube.com/watch?v=${videoId}&t=${offset}`;
     }
   }
 
@@ -2013,7 +2013,7 @@ function renderScoresheet(data) {
 function renderYT(data) {
   const el = document.getElementById('yt-link-wrap');
   if (data.video && data.video.youtubeVideoId) {
-    el.innerHTML = '<p style="margin-bottom:1rem;"><a class="yt-link" href="https://youtu.be/' + esc(data.video.youtubeVideoId) + '" target="_blank">&#x25B6; Watch on YouTube</a></p>';
+    el.innerHTML = '<p style="margin-bottom:1rem;"><a class="yt-link" href="https://www.youtube.com/watch?v=' + esc(data.video.youtubeVideoId) + '" target="_blank">&#x25B6; Watch on YouTube</a></p>';
   } else {
     el.innerHTML = '';
   }
@@ -2088,7 +2088,7 @@ function recapHTML(meetId, meetName, videoId, streamStart, timestamps, meetDate)
     if (hasVod) {
       const offset = Math.max(0, wallEpoch - streamStart - TIMESTAMP_LEAD_SECONDS);
       timeStr = fmtOffset(offset);
-      link = `https://youtu.be/${videoId}?t=${offset}`;
+      link = `https://www.youtube.com/watch?v=${videoId}&t=${offset}`;
     }
     byLifter[t.lifter_id].cells[key] = { weight: t.weight, link, timeStr };
     if (wallEpoch < byLifter[t.lifter_id].earliest) byLifter[t.lifter_id].earliest = wallEpoch;
@@ -2153,7 +2153,7 @@ function recapHTML(meetId, meetName, videoId, streamStart, timestamps, meetDate)
     </tr>`;
   }).join('');
 
-  const videoLink = videoId ? `<p style="margin-bottom:1.25rem;"><a href="https://youtu.be/${escHtml(videoId)}" target="_blank" style="color:#3b82f6;font-weight:600;">Full VOD on YouTube &#x25B6;</a></p>` : '';
+  const videoLink = videoId ? `<p style="margin-bottom:1.25rem;"><a href="https://www.youtube.com/watch?v=${escHtml(videoId)}" target="_blank" style="color:#3b82f6;font-weight:600;">Full VOD on YouTube &#x25B6;</a></p>` : '';
 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Meet Recap - LiftAlert</title>
