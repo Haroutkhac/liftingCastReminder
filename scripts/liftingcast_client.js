@@ -2116,7 +2116,6 @@ ${FONT_LINKS}
         <option value="order">Sort: Attempt Order</option>
         <option value="wc">Sort: Weight Class</option>
         <option value="total">Sort: Total</option>
-        <option value="dots">Sort: DOTS</option>
         <option value="name">Sort: Name</option>
       </select>
       <button id="hypo-btn" class="hypo-btn">What If?</button>
@@ -2459,7 +2458,7 @@ function renderScoreboard(data) {
 
   // Group header row
   const groups = [];
-  const preCols = 4; // Name + Place + Flight + BW
+  const preCols = 3; // Name + Flight + BW
   groups.push({ label: '', cols: preCols });
   if (hasSq) groups.push({ label: 'SQUAT', cols: 3 });
   if (hasBp) groups.push({ label: 'BENCH', cols: 3 });
@@ -2475,7 +2474,6 @@ function renderScoreboard(data) {
 
   // Sub-header row
   let subHeaders = '<th class="col-name" style="border-bottom:2px solid #252525;">LIFTER</th>';
-  subHeaders += '<th style="min-width:26px;border-bottom:2px solid #252525;">#</th>';
   subHeaders += '<th style="min-width:30px;border-bottom:2px solid #252525;">FLT</th>';
   subHeaders += '<th style="min-width:36px;border-bottom:2px solid #252525;">BW</th>';
 
@@ -2489,7 +2487,7 @@ function renderScoreboard(data) {
   }
   subHeaders += '<th class="group-border-left" style="border-bottom:2px solid #252525;">PROJ</th>';
   subHeaders += '<th style="border-bottom:2px solid #252525;">TOTAL</th>';
-  subHeaders += '<th style="border-bottom:2px solid #252525;">DOTS</th>';
+  subHeaders += '<th style="border-bottom:2px solid #252525;">#</th>';
 
   // Body rows
   let lastWc = null;
@@ -2522,16 +2520,6 @@ function renderScoreboard(data) {
     if (l.team) row += ' <span style="color:#555;font-size:0.62rem;">' + esc(l.team) + '</span>';
     if (l.division) row += '<br><span style="color:#666;font-size:0.58rem;font-weight:400;">' + esc(l.division) + '</span>';
     row += '</td>';
-
-    // Place (with hypothetical change indicator)
-    const placeClass = l.place === 1 ? 'place-1' : l.place === 2 ? 'place-2' : l.place === 3 ? 'place-3' : '';
-    let placeHtml = l.place || '&mdash;';
-    if (l._hypoChanged && l._origPlace && l.place && l._origPlace !== l.place) {
-      const diff = l._origPlace - l.place; // positive = moved up
-      if (diff > 0) placeHtml += '<span class="place-up">&uarr;' + diff + '</span>';
-      else placeHtml += '<span class="place-down">&darr;' + Math.abs(diff) + '</span>';
-    }
-    row += '<td class="place-cell ' + placeClass + '">' + placeHtml + '</td>';
 
     // Flight + Session
     row += '<td style="color:#666;font-size:0.72rem;">' + (l.flight || '') + (l.session ? '<span class="flight-badge">S' + l.session + '</span>' : '') + '</td>';
@@ -2619,8 +2607,15 @@ function renderScoreboard(data) {
     }
     row += '<td class="total-cell">' + totalHtml + '</td>';
 
-    // DOTS
-    row += '<td class="dots-cell">' + (l.dots ? l.dots.toFixed(1) : '&mdash;') + '</td>';
+    // Place
+    const placeClass = l.place === 1 ? 'place-1' : l.place === 2 ? 'place-2' : l.place === 3 ? 'place-3' : '';
+    let placeHtml = l.place || '&mdash;';
+    if (l._hypoChanged && l._origPlace && l.place && l._origPlace !== l.place) {
+      const diff = l._origPlace - l.place;
+      if (diff > 0) placeHtml += '<span class="place-up">&uarr;' + diff + '</span>';
+      else placeHtml += '<span class="place-down">&darr;' + Math.abs(diff) + '</span>';
+    }
+    row += '<td class="place-cell ' + placeClass + '">' + placeHtml + '</td>';
 
     row += '</tr>';
     return sep + row;
