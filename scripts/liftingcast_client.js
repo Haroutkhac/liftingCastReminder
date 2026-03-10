@@ -1534,11 +1534,6 @@ ${FONT_LINKS}
   .section-label { font-size: 0.7rem; color: #666; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 600; margin-bottom: 0.6rem; }
   .search-box { width: 100%; padding: 0.6rem 0.85rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.85rem; font-family: 'Outfit', sans-serif; margin-bottom: 1.25rem; box-sizing: border-box; }
   .search-box:focus { outline: none; border-color: #DC2626; box-shadow: 0 0 0 3px rgba(220,38,38,0.1); }
-  .search-results { margin-bottom: 1.25rem; }
-  .search-result { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 0.85rem; background: #141414; border: 1px solid #1F1F1F; border-radius: 8px; margin-bottom: 0.4rem; text-decoration: none; color: inherit; transition: border-color 0.2s; }
-  .search-result:hover { border-color: #DC2626; }
-  .search-result-name { font-size: 0.9rem; font-weight: 500; }
-  .search-result-meet { font-size: 0.75rem; color: #666; }
   .meet-card {
     display: block; text-decoration: none; color: inherit;
     background: #141414; border: 1px solid #1F1F1F; border-radius: 12px;
@@ -1564,7 +1559,6 @@ ${FONT_LINKS}
   <div class="page-heading">ALL MEETS</div>
   <p class="subtitle" style="margin-bottom:1.25rem;">${meetList.length} meet${meetList.length !== 1 ? 's' : ''} currently indexed</p>
   <input type="text" class="search-box" placeholder="Search lifters or meets..." oninput="searchMeets(this.value)">
-  <div class="search-results" id="searchResults" style="display:none;"></div>
   ${subscribedSection}${liveSection}${restSection}${empty}
 </div>
 <script>
@@ -1581,34 +1575,26 @@ ${FONT_LINKS}
     }
   } catch(e) {}
 })();
-let lifterIndex = null;
-async function loadLifterIndex() {
-  if (lifterIndex) return lifterIndex;
-  try {
-    const res = await fetch('/api/lifters');
-    lifterIndex = await res.json();
-  } catch (e) { lifterIndex = []; }
-  return lifterIndex;
-}
-async function searchMeets(q) {
-  const container = document.getElementById('searchResults');
+function esc(s) { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c])); }
+function searchMeets(q) {
   const cards = document.querySelectorAll('.meet-card');
   const labels = document.querySelectorAll('.section-group');
-  if (!q || q.length < 2) {
-    container.style.display = 'none';
-    container.innerHTML = '';
-    cards.forEach(c => c.style.display = '');
-    labels.forEach(l => l.style.display = '');
-    return;
-  }
-  const lower = q.toLowerCase();
-  // Filter meet cards
+  const lower = (q || '').trim().toLowerCase();
   cards.forEach(c => {
+    const ml = c.querySelector('.matched-lifters');
+    if (!lower || lower.length < 2) { c.style.display = ''; ml.innerHTML = ''; return; }
     const name = c.dataset.name || '';
-    const lifters = c.dataset.lifters || '';
-    c.style.display = (name.includes(lower) || lifters.includes(lower)) ? '' : 'none';
+    const nameMatch = name.includes(lower);
+    const lifterList = (c.dataset.liftersDisplay || '').split('|').filter(Boolean);
+    const matched = lifterList.filter(n => n.toLowerCase().includes(lower));
+    if (nameMatch || matched.length > 0) {
+      c.style.display = '';
+      ml.innerHTML = matched.length > 0 ? matched.slice(0, 8).map(n => '<span>' + esc(n) + '</span>').join('') + (matched.length > 8 ? '<span style="color:#666;">+' + (matched.length - 8) + ' more</span>' : '') : '';
+    } else {
+      c.style.display = 'none';
+      ml.innerHTML = '';
+    }
   });
-  // Hide section labels if all their cards are hidden
   labels.forEach(l => {
     let next = l.nextElementSibling;
     let anyVisible = false;
@@ -1618,21 +1604,6 @@ async function searchMeets(q) {
     }
     l.style.display = anyVisible ? '' : 'none';
   });
-  // Search lifters
-  const lifters = await loadLifterIndex();
-  const matches = lifters.filter(l => l.name.toLowerCase().includes(lower)).slice(0, 10);
-  if (matches.length > 0) {
-    container.style.display = '';
-    function esc(s) { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c])); }
-    container.innerHTML = '<div class="section-label" style="margin-bottom:0.4rem;">LIFTERS</div>' + matches.map(l => {
-      const escaped = esc(l.name);
-      return '<a href="/meets/' + encodeURIComponent(l.meetId) + '" class="search-result"><div><div class="search-result-name">' +
-        escaped + '</div><div class="search-result-meet">' + esc(l.meetName || l.meetId) + '</div></div></a>';
-    }).join('');
-  } else {
-    container.style.display = 'none';
-    container.innerHTML = '';
-  }
 }
 </script>
 </body></html>`;
@@ -1840,6 +1811,19 @@ ${FONT_LINKS}
   </div>
 </div>
 <script>
+// Auto-redirect with email from localStorage if not already in URL
+(function() {
+  try {
+    var email = new URLSearchParams(window.location.search).get('email');
+    if (!email) {
+      var saved = localStorage.getItem('liftalert_email');
+      if (saved) {
+        window.location.replace(window.location.pathname + '?email=' + encodeURIComponent(saved));
+        return;
+      }
+    }
+  } catch(e) {}
+})();
 function filterLifters(q) {
   const rows = document.querySelectorAll('.lifter-row');
   const seps = document.querySelectorAll('.wc-separator');
@@ -2387,6 +2371,26 @@ ${FONT_LINKS}
   <a href="/" class="back-link">&larr; Subscribe to a lifter</a>
 </div>
 <script>
+// Auto-redirect with email from localStorage if not already in URL
+(function() {
+  try {
+    var email = new URLSearchParams(window.location.search).get('email');
+    if (!email) {
+      var saved = localStorage.getItem('liftalert_email');
+      if (saved) {
+        window.location.replace('/my-subscriptions?email=' + encodeURIComponent(saved));
+        return;
+      }
+    }
+  } catch(e) {}
+})();
+// Save email to localStorage when form is submitted
+document.querySelector('form')?.addEventListener('submit', function() {
+  try {
+    var el = document.getElementById('email');
+    if (el && el.value) localStorage.setItem('liftalert_email', el.value);
+  } catch(e) {}
+});
 function removeRow(btn) {
   var row = btn.closest('tr');
   var d = row.dataset;
