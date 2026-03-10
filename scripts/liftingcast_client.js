@@ -703,7 +703,8 @@ async function autoSubscribeForMeet(meetId) {
       if (idx === -1) continue;
       const actualName = lifterNames[idx];
       try {
-        await addSubscription(ps.email, actualName, meetId, ps.notify_prefs);
+        const { isNew } = await addSubscription(ps.email, actualName, meetId, ps.notify_prefs);
+        if (!isNew) continue;
         created++;
         const meetName = st.meet?.name || meetId;
         const meetDate = st.meet?.date || '';
@@ -2148,7 +2149,7 @@ function recapHTML(meetId, meetName, videoId, streamStart, timestamps, meetDate)
       return `<td class="cell">${w}</td>`;
     }).join('');
     return `${separator}<tr class="lifter-row" data-name="${escHtml(l.name.toLowerCase())}" data-wc="${wc || ''}">
-      <td class="lifter-name">${escHtml(l.name)}${bwLabel}</td>
+      <td class="lifter-name"><a href="https://www.openpowerlifting.org/u/${escHtml(l.name.toLowerCase().replace(/[^a-z]/g, ''))}" target="_blank" style="color:inherit;text-decoration:none;">${escHtml(l.name)}</a>${bwLabel}</td>
       ${cells}
     </tr>`;
   }).join('');
@@ -2995,6 +2996,31 @@ async function main() {
 
   // Periodically discover new meets and check for new subscriptions
   pollForNewMeets();
+
+  // Self-health-check every 30s — exit if server is unresponsive so Railway restarts us
+  setInterval(() => {
+    const req = require('http').get(`http://localhost:${PORT}/health`, { timeout: 5000 }, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        if (res.statusCode === 200) {
+          console.log(`[HEALTH] OK — ${Object.keys(meets).length} meets loaded`);
+        } else {
+          console.error(`[HEALTH] Bad status ${res.statusCode}, exiting...`);
+          process.exit(1);
+        }
+      });
+    });
+    req.on('error', (err) => {
+      console.error(`[HEALTH] Self-check failed: ${err.message}, exiting...`);
+      process.exit(1);
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      console.error('[HEALTH] Self-check timed out, exiting...');
+      process.exit(1);
+    });
+  }, 30000);
 }
 
 main().catch(err => {

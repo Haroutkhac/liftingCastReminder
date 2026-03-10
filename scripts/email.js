@@ -6,7 +6,8 @@ const { Resend } = require('resend');
 const { logEmail } = require('./db');
 
 let resend = null;
-const fromEmail = process.env.RESEND_FROM || 'onboarding@resend.dev';
+const FALLBACK_FROM = 'onboarding@resend.dev';
+const fromEmail = process.env.RESEND_FROM || FALLBACK_FROM;
 
 function getResend() {
   if (!resend) {
@@ -14,6 +15,20 @@ function getResend() {
     resend = new Resend(process.env.RESEND_API_KEY);
   }
   return resend;
+}
+
+async function sendWithFallback(client, emailOptions) {
+  try {
+    await client.emails.send(emailOptions);
+    return true;
+  } catch (err) {
+    if (emailOptions.from !== FALLBACK_FROM) {
+      console.warn(`[EMAIL] Custom domain failed (${err.message}), retrying with fallback sender`);
+      await sendWithFallback(client, { ...emailOptions, from: FALLBACK_FROM });
+      return true;
+    }
+    throw err;
+  }
 }
 
 // In-memory dedup: key -> timestamp
@@ -82,7 +97,7 @@ async function sendOnDeckEmail(toEmail, lifterName, meetName, liftName, position
   }
 
   try {
-    await client.emails.send({
+    await sendWithFallback(client, {
       from: fromEmail,
       to: toEmail,
       subject: `LiftAlert: ${lifterName} is ${positionLabel}`,
@@ -133,7 +148,7 @@ async function sendSubscriptionConfirmation(toEmail, lifterName, meetName, meetD
   const unsubLink = `${baseUrl}/unsubscribe?email=${encodeURIComponent(toEmail)}&lifter=${encodeURIComponent(lifterName)}&meet=${encodeURIComponent(meetId)}`;
 
   try {
-    await client.emails.send({
+    await sendWithFallback(client, {
       from: fromEmail,
       to: toEmail,
       subject: `LiftAlert: Subscription confirmed for ${lifterName}`,
@@ -178,7 +193,7 @@ async function sendAutoSubscribeNotification(toEmail, lifterName, meetName, meet
   const unsubLink = `${baseUrl}/unsubscribe?email=${encodeURIComponent(toEmail)}&lifter=${encodeURIComponent(lifterName)}&meet=${encodeURIComponent(meetId)}`;
 
   try {
-    await client.emails.send({
+    await sendWithFallback(client, {
       from: fromEmail,
       to: toEmail,
       subject: `LiftAlert: ${lifterName} is competing at ${meetName}`,
@@ -227,7 +242,7 @@ async function sendRecapEmail(toEmail, lifterName, meetName, attempts, videoId, 
   }).join('');
 
   try {
-    await client.emails.send({
+    await sendWithFallback(client, {
       from: fromEmail,
       to: toEmail,
       subject: `LiftAlert Recap: ${lifterName} at ${meetName}`,

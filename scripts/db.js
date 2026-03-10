@@ -105,12 +105,14 @@ async function getAllMeetIds() {
 
 async function addSubscription(email, lifterName, meetId, notifyPrefs) {
   const prefs = notifyPrefs || 'in-the-hole';
-  await pool.query(
+  const { rows } = await pool.query(
     `INSERT INTO subscriptions (email, lifter_name, meet_id, notify_prefs)
      VALUES ($1, $2, $3, $4)
-     ON CONFLICT (email, lifter_name, meet_id) DO UPDATE SET notify_prefs = $4`,
+     ON CONFLICT (email, lifter_name, meet_id) DO UPDATE SET notify_prefs = $4
+     RETURNING (xmax = 0) AS is_new`,
     [email, lifterName, meetId, prefs]
   );
+  return { isNew: rows[0]?.is_new ?? false };
 }
 
 async function getSubscriptionsByEmail(email) {
