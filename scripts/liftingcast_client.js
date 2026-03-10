@@ -1847,9 +1847,6 @@ ${FONT_LINKS}
   .page-heading { font-family: 'Bebas Neue', sans-serif; font-size: 1.75rem; letter-spacing: 0.06em; margin-bottom: 0.25rem; }
   .platform-row { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
   .platform-status { padding: 0.65rem 0.85rem; background: #0D0D0D; border: 1px solid #1F1F1F; border-radius: 8px; }
-  @media (max-width: 600px) {
-    .platform-row { flex-direction: column; }
-  }
   .filter-input { width: 100%; max-width: 300px; padding: 0.5rem 0.75rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.85rem; font-family: 'Outfit', sans-serif; margin-bottom: 1rem; }
   .filter-input:focus { outline: none; border-color: #DC2626; box-shadow: 0 0 0 3px rgba(220,38,38,0.1); }
   .scoresheet { width: 100%; border-collapse: collapse; }
