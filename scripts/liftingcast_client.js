@@ -139,6 +139,22 @@ function getWeightClass(bw, gender, declaredWc) {
   return isFemale ? '84+' : '120+';
 }
 
+// --- DOTS coefficient calculation ---
+// Based on the official DOTS formula coefficients (2020 revision)
+function computeDOTS(bodyWeight, total, gender) {
+  if (!bodyWeight || bodyWeight <= 0 || !total || total <= 0) return null;
+  const isFemale = gender && /^f/i.test(gender);
+  // DOTS coefficients (male / female)
+  const coeff = isFemale
+    ? [-57.96288, 13.6175032, -0.1126655495, 0.0005158568, -0.0000010706]
+    : [-307.75076, 24.0900756, -0.1918759221, 0.0007391293, -0.0000010930];
+  const bw = Math.min(Math.max(bodyWeight, 40), 210); // clamp
+  const denom = coeff[0] + coeff[1] * bw + coeff[2] * bw ** 2 + coeff[3] * bw ** 3 + coeff[4] * bw ** 4;
+  if (denom <= 0) return null;
+  const dots = (500 / denom) * total;
+  return Math.round(dots * 100) / 100;
+}
+
 // --- Compute lifter's best completed lifts from attempt docs ---
 function computeLifterBests(meetState, lifterId) {
   // Use pre-computed bests from SymPlmeet if available
@@ -1850,20 +1866,25 @@ ${FONT_LINKS}
 <style>
   ${SHARED_STYLES}
   body { padding: 1.5rem 0.75rem; }
-  .container { max-width: 700px; margin: 0 auto; }
+  .container { max-width: 1400px; margin: 0 auto; }
   .nav { margin-bottom: 1.5rem; font-size: 0.85rem; }
   .nav a { color: #777; }
   .nav a:hover { color: #F0F0F0; }
   .page-heading { font-family: 'Bebas Neue', sans-serif; font-size: 1.75rem; letter-spacing: 0.06em; margin-bottom: 0.25rem; display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
   .live-badge { display: inline-flex; align-items: center; gap: 0.35rem; background: #22C55E; color: #fff; font-size: 0.7rem; font-family: 'Outfit', sans-serif; font-weight: 600; padding: 0.2rem 0.6rem; border-radius: 4px; letter-spacing: 0.08em; text-transform: uppercase; }
   .live-badge .pulse-dot { width: 6px; height: 6px; background: #fff; border-radius: 50%; animation: pulse 1.5s infinite; }
+  .not-live-badge { display: inline-flex; align-items: center; gap: 0.35rem; background: #555; color: #fff; font-size: 0.7rem; font-family: 'Outfit', sans-serif; font-weight: 600; padding: 0.2rem 0.6rem; border-radius: 4px; letter-spacing: 0.08em; text-transform: uppercase; }
   .yt-link { font-size: 0.85rem; font-family: 'Outfit', sans-serif; color: #3b82f6; font-weight: 500; }
   .yt-link:hover { color: #60a5fa; }
+
+  /* Hero / current lifter section */
   .hero { background: #141414; border: 1px solid #1F1F1F; border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem; text-align: center; }
   .hero-label { font-size: 0.68rem; color: #666; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.3rem; }
   .hero-name { font-family: 'Bebas Neue', sans-serif; font-size: 2rem; letter-spacing: 0.04em; color: #F0F0F0; }
   .hero-detail { font-size: 0.9rem; color: #777; margin-top: 0.15rem; }
   .hero-weight { font-size: 1.5rem; font-weight: 700; color: #DC2626; margin-top: 0.25rem; }
+
+  /* Queue section */
   .queue-section { margin-bottom: 1.25rem; }
   .queue-label { font-size: 0.68rem; color: #666; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.5rem; font-weight: 600; }
   .queue-item { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0.75rem; background: #0D0D0D; border: 1px solid #1A1A1A; border-radius: 8px; margin-bottom: 0.35rem; font-size: 0.88rem; }
@@ -1872,39 +1893,90 @@ ${FONT_LINKS}
   .queue-name a { color: #CCC; }
   .queue-name a:hover { color: #DC2626; }
   .queue-detail { color: #555; font-size: 0.82rem; margin-left: auto; white-space: nowrap; }
-  .scoresheet { width: 100%; border-collapse: collapse; }
-  .scoresheet th { position: sticky; top: 0; background: #0A0A0A; z-index: 2; }
-  .scoresheet .lifter-name {
-    position: sticky; left: 0; background: #0A0A0A; z-index: 1;
-    padding: 0.5rem 0.75rem; white-space: nowrap; font-weight: 500; font-size: 0.85rem;
-    border-bottom: 1px solid #1A1A1A; border-right: 2px solid #252525;
-    max-width: 180px; overflow: hidden; text-overflow: ellipsis;
-  }
-  .scoresheet .lifter-name a { color: inherit; }
-  .scoresheet .lifter-name a:hover { color: #DC2626; }
-  .scoresheet .cell { text-align: center; padding: 0.45rem 0.3rem; border-bottom: 1px solid #1A1A1A; font-size: 0.85rem; color: #BBB; }
-  .scoresheet .cell.empty { color: #333; }
-  .scoresheet .lifter-row:hover td { background: #141414; }
-  .scoresheet .lifter-row:hover .lifter-name { background: #141414; }
-  .table-wrap { overflow-x: auto; border: 1px solid #1F1F1F; border-radius: 12px; background: #0A0A0A; }
-  .filter-input { width: 100%; max-width: 300px; padding: 0.5rem 0.75rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.85rem; font-family: 'Outfit', sans-serif; margin-bottom: 1rem; }
+
+  /* Controls bar */
+  .controls { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .filter-input { width: 100%; max-width: 220px; padding: 0.45rem 0.7rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.82rem; font-family: 'Outfit', sans-serif; }
   .filter-input:focus { outline: none; border-color: #DC2626; box-shadow: 0 0 0 3px rgba(220,38,38,0.1); }
+  .filter-select { padding: 0.45rem 0.6rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.82rem; font-family: 'Outfit', sans-serif; cursor: pointer; }
+  .filter-select:focus { outline: none; border-color: #DC2626; }
+
+  /* Scoreboard table */
+  .table-wrap { overflow-x: auto; border: 1px solid #1F1F1F; border-radius: 12px; background: #0A0A0A; }
+  .sb { width: 100%; border-collapse: collapse; white-space: nowrap; }
+  .sb thead th { position: sticky; top: 0; background: #0A0A0A; z-index: 3; padding: 0.3rem 0.25rem; font-size: 0.6rem; color: #666; text-transform: uppercase; letter-spacing: 0.06em; text-align: center; border-bottom: 1px solid #252525; font-weight: 600; }
+  .sb thead .group-header { color: #DC2626; font-size: 0.6rem; letter-spacing: 0.1em; border-bottom: 1px solid #252525; padding: 0.4rem 0; }
+  .sb thead th.col-name { text-align: left; padding-left: 0.6rem; min-width: 140px; position: sticky; left: 0; background: #0A0A0A; z-index: 4; border-right: 2px solid #252525; }
+  .sb tbody td { padding: 0.35rem 0.25rem; text-align: center; font-size: 0.8rem; border-bottom: 1px solid #1A1A1A; color: #BBB; }
+  .sb tbody td.col-name {
+    text-align: left; padding-left: 0.6rem; font-weight: 500; font-size: 0.8rem;
+    position: sticky; left: 0; background: #0A0A0A; z-index: 1;
+    border-right: 2px solid #252525; max-width: 200px; overflow: hidden; text-overflow: ellipsis;
+  }
+  .sb tbody td.col-name a { color: inherit; }
+  .sb tbody td.col-name a:hover { color: #DC2626; }
+
+  /* Attempt cells */
+  .att { font-size: 0.78rem; font-variant-numeric: tabular-nums; min-width: 42px; }
+  .att.good { color: #4ADE80; font-weight: 600; }
+  .att.miss { color: #EF4444; text-decoration: line-through; font-weight: 400; }
+  .att.open { color: #888; }
+  .att.current { color: #FBBF24; font-weight: 700; background: rgba(251,191,36,0.08); }
+  .att.empty { color: #333; }
+
+  /* Best / total cells */
+  .best-cell { font-weight: 600; color: #F0F0F0; min-width: 44px; }
+  .total-cell { font-weight: 700; color: #F0F0F0; min-width: 48px; font-size: 0.85rem; }
+  .subtotal-cell { font-weight: 500; color: #CCC; min-width: 44px; }
+  .dots-cell { color: #A78BFA; font-weight: 600; min-width: 48px; }
+  .place-cell { font-weight: 700; min-width: 32px; }
+  .place-1 { color: #FFD700; }
+  .place-2 { color: #C0C0C0; }
+  .place-3 { color: #CD7F32; }
+
+  /* Separator rows */
+  .wc-separator td { padding: 0.6rem 0.6rem 0.3rem; font-size: 0.68rem; color: #DC2626; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; border-bottom: 2px solid #252525; background: #0F0F0F; text-align: left; }
+
+  /* Current lifter highlight row */
+  .sb tbody tr.current-lifter td { background: rgba(220, 38, 38, 0.06); }
+  .sb tbody tr.current-lifter td.col-name { background: rgba(220, 38, 38, 0.06); }
+  .sb tbody tr:hover td { background: #141414; }
+  .sb tbody tr:hover td.col-name { background: #141414; }
+
+  /* Flight/session badge */
+  .flight-badge { display: inline-block; font-size: 0.6rem; color: #555; font-weight: 600; margin-left: 0.3rem; }
+
+  .meta-row { display: flex; gap: 0.5rem; font-size: 0.72rem; color: #555; margin-bottom: 0.25rem; }
+
   .updated-ago { font-size: 0.75rem; color: #444; margin-top: 0.5rem; text-align: center; }
   .empty-state { text-align: center; padding: 2rem 1rem; color: #555; }
+
+  /* Border between lift groups */
+  .group-border-left { border-left: 2px solid #252525; }
+
   @media (max-width: 600px) {
-    .scoresheet .lifter-name { font-size: 0.75rem; padding: 0.4rem 0.5rem; max-width: 120px; }
-    .scoresheet .cell { padding: 0.35rem 0.15rem; font-size: 0.75rem; }
+    .sb tbody td { font-size: 0.72rem; padding: 0.3rem 0.15rem; }
+    .sb thead th { font-size: 0.55rem; padding: 0.25rem 0.15rem; }
+    .sb tbody td.col-name { font-size: 0.72rem; min-width: 110px; padding-left: 0.4rem; }
+    .att { min-width: 34px; font-size: 0.7rem; }
     .hero-name { font-size: 1.5rem; }
+    .controls { gap: 0.5rem; }
+    .filter-input { max-width: 160px; }
   }
 </style>
 </head><body><div class="container animate-in">
   <div class="nav"><a href="/meets/${escHtml(meetId)}">&larr; Meet details</a></div>
-  <div class="page-heading">${escHtml(meetName)} <span class="live-badge"><span class="pulse-dot"></span>LIVE</span></div>
+  <div class="page-heading">${escHtml(meetName)} <span id="live-indicator" class="live-badge"><span class="pulse-dot"></span>LIVE</span></div>
   <div id="yt-link-wrap"></div>
   <div id="hero" class="hero"><div class="empty-state">Loading...</div></div>
   <div id="queue" class="queue-section"></div>
-  <div style="font-size:0.72rem;color:#666;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem;font-weight:600;">SCORESHEET</div>
-  <input type="text" class="filter-input" placeholder="Search lifters..." oninput="filterLifters(this.value)">
+  <div style="font-size:0.72rem;color:#666;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem;font-weight:600;">SCOREBOARD</div>
+  <div class="controls">
+    <input type="text" id="search-input" class="filter-input" placeholder="Search lifters...">
+    <select id="session-filter" class="filter-select"><option value="">All Sessions</option></select>
+    <select id="flight-filter" class="filter-select"><option value="">All Flights</option></select>
+    <select id="wc-filter" class="filter-select"><option value="">All Weight Classes</option></select>
+  </div>
   <div id="scoresheet"></div>
   <div id="updated" class="updated-ago"></div>
   <div style="text-align:center;margin-top:1.5rem;">
@@ -1914,19 +1986,31 @@ ${FONT_LINKS}
 <script>
 const MEET_ID = '${escHtml(meetId)}';
 const LIFT_LABEL = { squat: 'SQ', bench: 'BP', dead: 'DL', deadlift: 'DL' };
+const ATT_KEYS = ['sq1','sq2','sq3','bp1','bp2','bp3','dl1','dl2','dl3'];
 let lastData = null;
+let currentFilters = { search: '', session: '', flight: '', wc: '' };
 
 function opLink(name) {
   const slug = name.toLowerCase().replace(/[^a-z]/g, '');
   return 'https://www.openpowerlifting.org/u/' + slug;
 }
 
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
 function renderHero(data) {
   const el = document.getElementById('hero');
+  const indicator = document.getElementById('live-indicator');
   if (!data.platforms || data.platforms.length === 0) {
     el.innerHTML = '<div class="empty-state">Waiting for meet to start...</div>';
     return;
   }
+  const hasActive = data.platforms.some(p => p.current);
+  indicator.className = hasActive ? 'live-badge' : 'not-live-badge';
+  indicator.innerHTML = hasActive ? '<span class="pulse-dot"></span>LIVE' : 'NOT ACTIVE';
   const parts = data.platforms.map(p => {
     if (!p.current) return '';
     const label = LIFT_LABEL[p.current.liftName] || p.current.liftName || '';
@@ -1943,7 +2027,7 @@ function renderQueue(data) {
   if (!data.platforms) { el.innerHTML = ''; return; }
   const parts = data.platforms.map(p => {
     if (!p.queue || p.queue.length === 0) return '';
-    const items = p.queue.slice(0, 8).map((q, i) => {
+    const items = p.queue.slice(0, 6).map((q, i) => {
       const label = LIFT_LABEL[q.liftName] || '';
       const posLabels = ['ON DECK', 'IN HOLE'];
       const posLabel = i < 2 ? '<span style="color:' + (i === 0 ? '#22C55E' : '#EAB308') + ';font-size:0.68rem;font-weight:600;">' + posLabels[i] + '</span> ' : '';
@@ -1959,50 +2043,188 @@ function renderQueue(data) {
   el.innerHTML = parts.join('');
 }
 
-function renderScoresheet(data) {
+function populateFilters(data) {
+  if (!data.lifters) return;
+  const sessions = new Set(), flights = new Set(), wcs = new Set();
+  for (const l of data.lifters) {
+    if (l.session) sessions.add(l.session);
+    if (l.flight) flights.add(l.flight);
+    if (l.weightClass) wcs.add(l.weightClass);
+  }
+
+  function updateOptions(sel, values, labelFn) {
+    const current = sel.value;
+    const sorted = [...values].sort((a, b) => typeof a === 'number' ? a - b : String(a).localeCompare(String(b)));
+    const newHtml = '<option value="">' + sel.options[0].text + '</option>' + sorted.map(v => '<option value="' + esc(String(v)) + '">' + labelFn(v) + '</option>').join('');
+    if (sel.innerHTML !== newHtml) {
+      sel.innerHTML = newHtml;
+      sel.value = current;
+    }
+  }
+
+  updateOptions(document.getElementById('session-filter'), sessions, v => 'Session ' + v);
+  updateOptions(document.getElementById('flight-filter'), flights, v => 'Flight ' + v);
+  updateOptions(document.getElementById('wc-filter'), wcs, v => (typeof v === 'number' ? v + ' kg' : v));
+}
+
+function renderScoreboard(data) {
   const el = document.getElementById('scoresheet');
   if (!data.lifters || data.lifters.length === 0) {
     el.innerHTML = '<div class="empty-state">No lifter data yet</div>';
     return;
   }
-  const lifters = data.lifters;
-  const hasSq = lifters.some(l => l.bestSq);
-  const hasBp = lifters.some(l => l.bestBp);
-  const hasDl = lifters.some(l => l.bestDl);
-  const hasTotal = lifters.some(l => l.total);
-  const cols = [];
-  if (hasSq) cols.push({ key: 'bestSq', label: 'SQ' });
-  if (hasBp) cols.push({ key: 'bestBp', label: 'BP' });
-  if (hasDl) cols.push({ key: 'bestDl', label: 'DL' });
-  if (hasTotal) cols.push({ key: 'total', label: 'TOT' });
-  if (cols.length === 0) {
+
+  let lifters = data.lifters;
+
+  // Detect which lift groups have data
+  const hasAnyAttempt = (prefix) => lifters.some(l => l.attempts && (l.attempts[prefix+'1'] || l.attempts[prefix+'2'] || l.attempts[prefix+'3']));
+  const hasSq = hasAnyAttempt('sq');
+  const hasBp = hasAnyAttempt('bp');
+  const hasDl = hasAnyAttempt('dl');
+
+  if (!hasSq && !hasBp && !hasDl) {
     el.innerHTML = '<div class="empty-state">Lifting hasn\\'t started yet &mdash; results will appear as attempts are recorded.</div>';
     return;
   }
-  const totalCols = cols.length + 1;
-  const hdr = cols.map(c => '<th style="text-align:center;min-width:52px;padding:0.35rem 0.3rem;font-size:0.65rem;">' + c.label + '</th>').join('');
+
+  // Apply filters
+  const { search, session, flight, wc } = currentFilters;
+  if (search || session || flight || wc) {
+    lifters = lifters.filter(l => {
+      if (search && !l.name.toLowerCase().includes(search)) return false;
+      if (session && String(l.session) !== session) return false;
+      if (flight && l.flight !== flight) return false;
+      if (wc && String(l.weightClass) !== wc) return false;
+      return true;
+    });
+  }
+
+  // Build column definitions
+  const attemptCols = [];
+  if (hasSq) attemptCols.push('sq1','sq2','sq3');
+  if (hasBp) attemptCols.push('bp1','bp2','bp3');
+  if (hasDl) attemptCols.push('dl1','dl2','dl3');
+
+  // Group header row
+  const groups = [];
+  // Name + Place + Flight + BW take up 4 cols before attempts
+  const preCols = 4;
+  groups.push({ label: '', cols: preCols }); // placeholder for non-grouped pre-cols
+  if (hasSq) groups.push({ label: 'SQUAT', cols: 4 }); // 3 attempts + best
+  if (hasBp) groups.push({ label: 'BENCH', cols: 4 });
+  if (hasDl) groups.push({ label: 'DEADLIFT', cols: 4 });
+  // Sub-total, Total, DOTS
+  const postCols = (hasSq && hasBp ? 1 : 0) + 1 + 1; // subtotal (only if sq+bp), total, dots
+  groups.push({ label: '', cols: postCols });
+
+  const groupHeaderRow = groups.map(g =>
+    g.label
+      ? '<th class="group-header" colspan="' + g.cols + '">' + g.label + '</th>'
+      : '<th colspan="' + g.cols + '" style="border-bottom:1px solid #252525;"></th>'
+  ).join('');
+
+  // Sub-header row
+  let subHeaders = '<th class="col-name" rowspan="1" style="border-bottom:2px solid #252525;">LIFTER</th>';
+  subHeaders += '<th style="min-width:28px;border-bottom:2px solid #252525;">#</th>'; // place
+  subHeaders += '<th style="min-width:32px;border-bottom:2px solid #252525;">FLT</th>'; // flight
+  subHeaders += '<th style="min-width:38px;border-bottom:2px solid #252525;">BW</th>'; // bodyweight
+
+  const attLabels = { sq1:'1', sq2:'2', sq3:'3', bp1:'1', bp2:'2', bp3:'3', dl1:'1', dl2:'2', dl3:'3' };
+  let prevGroup = '';
+  for (const key of attemptCols) {
+    const group = key.slice(0, 2);
+    const isGroupStart = group !== prevGroup;
+    prevGroup = group;
+    subHeaders += '<th class="att' + (isGroupStart ? ' group-border-left' : '') + '" style="border-bottom:2px solid #252525;">' + attLabels[key] + '</th>';
+  }
+  // Best columns per lift group
+  if (hasSq) subHeaders += '<th class="group-border-left" style="border-bottom:2px solid #252525;">BEST</th>';
+  if (hasBp) subHeaders += '<th class="group-border-left" style="border-bottom:2px solid #252525;">BEST</th>';
+  if (hasDl) subHeaders += '<th class="group-border-left" style="border-bottom:2px solid #252525;">BEST</th>';
+  if (hasSq && hasBp) subHeaders += '<th class="group-border-left" style="border-bottom:2px solid #252525;">SUB</th>';
+  subHeaders += '<th class="group-border-left" style="border-bottom:2px solid #252525;">TOTAL</th>';
+  subHeaders += '<th style="border-bottom:2px solid #252525;">DOTS</th>';
+
+  // Body rows
   let lastWc = null;
+  const totalColCount = 4 + attemptCols.length + (hasSq?1:0) + (hasBp?1:0) + (hasDl?1:0) + (hasSq&&hasBp?1:0) + 2;
   const rows = lifters.map(l => {
     let sep = '';
     if (l.weightClass !== lastWc) {
       lastWc = l.weightClass;
       const wcLabel = l.weightClass ? (typeof l.weightClass === 'number' ? l.weightClass + ' kg' : l.weightClass) : 'Unknown';
-      sep = '<tr class="wc-separator"><td colspan="' + totalCols + '" style="padding:0.6rem 0.75rem 0.3rem;font-size:0.7rem;color:#DC2626;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;border-bottom:2px solid #252525;background:#0F0F0F;">' + wcLabel + '</td></tr>';
+      sep = '<tr class="wc-separator"><td colspan="' + totalColCount + '">' + wcLabel + '</td></tr>';
     }
-    const bwLabel = l.bodyWeight ? ' <span style="color:#555;font-size:0.72rem;font-weight:300;">' + l.bodyWeight + '</span>' : '';
-    const cells = cols.map(c => {
-      const val = l[c.key];
-      if (!val) return '<td class="cell empty">&mdash;</td>';
-      const isTot = c.key === 'total';
-      return '<td class="cell"' + (isTot ? ' style="font-weight:600;color:#F0F0F0;"' : '') + '>' + val + '</td>';
-    }).join('');
-    return sep + '<tr class="lifter-row" data-name="' + esc(l.name.toLowerCase()) + '" data-wc="' + (l.weightClass || '') + '">' +
-      '<td class="lifter-name"><a href="' + opLink(l.name) + '" target="_blank">' + esc(l.name) + '</a>' + bwLabel + '</td>' +
-      cells + '</tr>';
+
+    const rowClass = l.isCurrent ? 'current-lifter' : '';
+    let row = '<tr class="' + rowClass + '" data-name="' + esc(l.name.toLowerCase()) + '" data-wc="' + (l.weightClass || '') + '" data-session="' + (l.session || '') + '" data-flight="' + (l.flight || '') + '">';
+
+    // Name
+    row += '<td class="col-name"><a href="' + opLink(l.name) + '" target="_blank">' + esc(l.name) + '</a>';
+    if (l.team) row += ' <span style="color:#555;font-size:0.65rem;">' + esc(l.team) + '</span>';
+    row += '</td>';
+
+    // Place
+    const placeClass = l.place === 1 ? 'place-1' : l.place === 2 ? 'place-2' : l.place === 3 ? 'place-3' : '';
+    row += '<td class="place-cell ' + placeClass + '">' + (l.place || '&mdash;') + '</td>';
+
+    // Flight
+    row += '<td style="color:#666;font-size:0.75rem;">' + (l.flight || '') + (l.session ? '<span class="flight-badge">S' + l.session + '</span>' : '') + '</td>';
+
+    // Body weight
+    row += '<td style="color:#777;font-size:0.78rem;">' + (l.bodyWeight || '&mdash;') + '</td>';
+
+    // Attempt cells
+    const atts = l.attempts || {};
+    let prevGrp = '';
+    for (const key of attemptCols) {
+      const grp = key.slice(0, 2);
+      const isGrpStart = grp !== prevGrp;
+      prevGrp = grp;
+      const a = atts[key];
+      let cls = 'att';
+      if (isGrpStart) cls += ' group-border-left';
+      let content = '&mdash;';
+      if (a && a.weight) {
+        if (a.result === 'good') {
+          cls += ' good';
+          content = String(a.weight);
+        } else if (a.result === 'bad') {
+          cls += ' miss';
+          content = String(a.weight);
+        } else {
+          // Pending attempt (weight set but not yet lifted)
+          cls += ' open';
+          content = String(a.weight);
+        }
+      } else {
+        cls += ' empty';
+      }
+      row += '<td class="' + cls + '">' + content + '</td>';
+    }
+
+    // Best columns
+    if (hasSq) row += '<td class="best-cell group-border-left">' + (l.bestSq || '&mdash;') + '</td>';
+    if (hasBp) row += '<td class="best-cell group-border-left">' + (l.bestBp || '&mdash;') + '</td>';
+    if (hasDl) row += '<td class="best-cell group-border-left">' + (l.bestDl || '&mdash;') + '</td>';
+
+    // Subtotal (SQ + BP)
+    if (hasSq && hasBp) row += '<td class="subtotal-cell group-border-left">' + (l.subTotal || '&mdash;') + '</td>';
+
+    // Total
+    row += '<td class="total-cell group-border-left">' + (l.total || '&mdash;') + '</td>';
+
+    // DOTS
+    row += '<td class="dots-cell">' + (l.dots ? l.dots.toFixed(2) : '&mdash;') + '</td>';
+
+    row += '</tr>';
+    return sep + row;
   }).join('');
-  el.innerHTML = '<div class="table-wrap"><table class="scoresheet"><thead><tr>' +
-    '<th style="text-align:left;padding:0.35rem 0.75rem;font-size:0.65rem;border-bottom:2px solid #252525;border-right:2px solid #252525;">LIFTER</th>' + hdr +
-    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+
+  el.innerHTML = '<div class="table-wrap"><table class="sb"><thead>' +
+    '<tr>' + groupHeaderRow + '</tr>' +
+    '<tr>' + subHeaders + '</tr>' +
+    '</thead><tbody>' + rows + '</tbody></table></div>';
 }
 
 function renderYT(data) {
@@ -2014,27 +2236,23 @@ function renderYT(data) {
   }
 }
 
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
-function filterLifters(q) {
-  const rows = document.querySelectorAll('.lifter-row');
-  const seps = document.querySelectorAll('.wc-separator');
-  const lower = q.toLowerCase();
-  const visibleWcs = new Set();
-  rows.forEach(r => {
-    const show = r.dataset.name.includes(lower);
-    r.style.display = show ? '' : 'none';
-    if (show && r.dataset.wc) visibleWcs.add(String(r.dataset.wc));
-  });
-  seps.forEach(s => {
-    const wcText = s.textContent.trim().replace(' kg','');
-    s.style.display = (!lower || visibleWcs.has(wcText)) ? '' : 'none';
-  });
-}
+// Filter event listeners
+document.getElementById('search-input').addEventListener('input', function() {
+  currentFilters.search = this.value.toLowerCase();
+  if (lastData) renderScoreboard(lastData);
+});
+document.getElementById('session-filter').addEventListener('change', function() {
+  currentFilters.session = this.value;
+  if (lastData) renderScoreboard(lastData);
+});
+document.getElementById('flight-filter').addEventListener('change', function() {
+  currentFilters.flight = this.value;
+  if (lastData) renderScoreboard(lastData);
+});
+document.getElementById('wc-filter').addEventListener('change', function() {
+  currentFilters.wc = this.value;
+  if (lastData) renderScoreboard(lastData);
+});
 
 async function poll() {
   try {
@@ -2044,7 +2262,8 @@ async function poll() {
     lastData = data;
     renderHero(data);
     renderQueue(data);
-    renderScoresheet(data);
+    populateFilters(data);
+    renderScoreboard(data);
     renderYT(data);
     document.getElementById('updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
   } catch (e) { /* retry next cycle */ }
@@ -2871,17 +3090,52 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
           })),
         };
       });
+      // Build per-lifter attempt map: { lifterId -> { sq1: {weight, result}, sq2: ... } }
+      const lifterAttempts = {};
+      for (const [aid, attempt] of Object.entries(st.attempts)) {
+        if (!attempt.lifterId || !attempt.liftName) continue;
+        if (attempt.attemptNumber === '4') continue; // skip 4th attempts
+        const liftPrefix = attempt.liftName === 'squat' ? 'sq' : attempt.liftName === 'bench' ? 'bp' : 'dl';
+        const key = liftPrefix + attempt.attemptNumber;
+        if (!lifterAttempts[attempt.lifterId]) lifterAttempts[attempt.lifterId] = {};
+        lifterAttempts[attempt.lifterId][key] = {
+          weight: attempt.weight || null,
+          result: attempt.result || null, // "good", "bad", or null (not yet attempted)
+        };
+      }
+
+      // Determine current lifter IDs across all platforms
+      const currentLifterIds = new Set();
+      for (const [pid, platform] of Object.entries(st.platforms)) {
+        const parsed = parseAttemptId(platform.currentAttemptId);
+        if (parsed) currentLifterIds.add(parsed.lifterId);
+      }
+
       const lifters = Object.values(st.lifters).filter(l => l.name).map(l => {
         const bests = computeLifterBests(st, l._id);
         const total = bests.squat + bests.bench + bests.dead;
+        const subTotal = bests.squat + bests.bench;
+        const attempts = lifterAttempts[l._id] || {};
+        // DOTS coefficient calculation
+        const dots = (total > 0 && l.bodyWeight > 0) ? computeDOTS(l.bodyWeight, total, l.gender) : null;
         return {
+          id: l._id,
           name: l.name,
+          team: l.team || null,
           bodyWeight: l.bodyWeight || null,
           weightClass: getWeightClass(l.bodyWeight, l.gender, l.declaredWeightClass),
+          gender: l.gender || null,
+          flight: l.flight || null,
+          session: l.session || null,
+          lot: l.lot || null,
+          attempts, // { sq1: {weight, result}, sq2: ..., bp1: ..., dl3: ... }
           bestSq: bests.squat || null,
           bestBp: bests.bench || null,
           bestDl: bests.dead || null,
+          subTotal: subTotal || null,
           total: total || null,
+          dots,
+          isCurrent: currentLifterIds.has(l._id),
         };
       });
       lifters.sort((a, b) => {
@@ -2893,6 +3147,18 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
         if (bwA !== bwB) return bwA - bwB;
         return a.name.localeCompare(b.name);
       });
+
+      // Compute placement within weight class
+      const byWc = {};
+      for (const l of lifters) {
+        const wcKey = `${l.gender || ''}:${l.weightClass || ''}`;
+        if (!byWc[wcKey]) byWc[wcKey] = [];
+        byWc[wcKey].push(l);
+      }
+      for (const group of Object.values(byWc)) {
+        const ranked = group.filter(l => l.total > 0).sort((a, b) => b.total - a.total);
+        ranked.forEach((l, i) => { l.place = i + 1; });
+      }
       let video = null;
       try { video = await getMeetVideo(liveMeetId); } catch (e) { /* ignore */ }
       res.writeHead(200, { 'Content-Type': 'application/json' });
