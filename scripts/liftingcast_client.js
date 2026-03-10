@@ -2494,26 +2494,23 @@ function renderScoreboard(data) {
   // Body rows
   let lastWc = null;
   let lastGender = null;
-  const showWcSep = currentSort === 'wc';
   const totalColCount = 4 + attemptCols.length + 3;
 
   const rows = lifters.map(l => {
     let sep = '';
-    if (showWcSep) {
-      // Gender separator (Men / Women)
-      const g = l.gender && /^f/i.test(l.gender) ? 'F' : 'M';
-      if (g !== lastGender) {
-        lastGender = g;
-        lastWc = null; // reset wc when gender changes
-        const gLabel = g === 'F' ? 'WOMEN' : 'MEN';
-        sep += '<tr class="gender-separator"><td colspan="' + totalColCount + '">' + gLabel + '</td></tr>';
-      }
-      // Weight class separator
-      if (l.weightClass !== lastWc) {
-        lastWc = l.weightClass;
-        const wcLabel = l.weightClass ? (typeof l.weightClass === 'number' ? l.weightClass + ' kg' : l.weightClass) : 'Unknown';
-        sep += '<tr class="wc-separator"><td colspan="' + totalColCount + '">' + wcLabel + '</td></tr>';
-      }
+    // Gender separator (Men / Women)
+    const g = l.gender && /^f/i.test(l.gender) ? 'F' : 'M';
+    if (g !== lastGender) {
+      lastGender = g;
+      lastWc = null; // reset wc when gender changes
+      const gLabel = g === 'F' ? 'WOMEN' : 'MEN';
+      sep += '<tr class="gender-separator"><td colspan="' + totalColCount + '">' + gLabel + '</td></tr>';
+    }
+    // Weight class separator
+    if (l.weightClass !== lastWc) {
+      lastWc = l.weightClass;
+      const wcLabel = l.weightClass ? (typeof l.weightClass === 'number' ? l.weightClass + ' kg' : l.weightClass) : 'Unknown';
+      sep += '<tr class="wc-separator"><td colspan="' + totalColCount + '">' + wcLabel + '</td></tr>';
     }
 
     const bombed = isBombedOut(l);
