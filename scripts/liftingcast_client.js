@@ -1713,6 +1713,7 @@ function meetDetailHTML(meetId, meetState, subscribedLifterNames, videoData, tim
   const platformStatuses = Object.entries(meetState.platforms).map(([pid, platform]) => {
     const parsed = parseAttemptId(platform.currentAttemptId);
     const currentLifter = parsed ? meetState.lifters[parsed.lifterId] : null;
+    const currentAttempt = platform.currentAttemptId ? meetState.attempts[platform.currentAttemptId] : null;
     const order = computeAttemptOrder(meetState, pid);
     const currentIdx = platform.currentAttemptId ? order.findIndex(a => a.attemptId === platform.currentAttemptId) : -1;
     const nextUp = currentIdx >= 0 ? order.slice(currentIdx + 1, currentIdx + 3) : [];
@@ -1721,6 +1722,7 @@ function meetDetailHTML(meetId, meetState, subscribedLifterNames, videoData, tim
       currentLifter: currentLifter?.name || null,
       liftName: parsed?.liftName || null,
       attemptNumber: parsed?.attemptNumber || null,
+      currentWeight: currentAttempt?.weight || null,
       nextUp: nextUp.map(a => ({ name: a.lifterName, lift: a.liftName, attempt: a.attemptNumber })),
     };
   });
@@ -1728,16 +1730,25 @@ function meetDetailHTML(meetId, meetState, subscribedLifterNames, videoData, tim
   const platformHTML = platformStatuses.map(p => {
     if (!p.currentLifter) return '';
     const liftLabel = { squat: 'SQ', bench: 'BP', dead: 'DL', deadlift: 'DL' }[p.liftName] || p.liftName || '';
+    const weightStr = p.currentWeight ? `<div style="font-size:1.3rem;font-weight:700;color:#DC2626;margin-top:0.15rem;">${p.currentWeight} kg</div>` : '';
+    const nowLiftingCard = `<div class="platform-status" style="flex:1;min-width:0;">
+      <div style="font-size:0.68rem;color:#666;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.2rem;">Now lifting</div>
+      <div><strong style="color:#F0F0F0;font-size:1rem;">${escHtml(p.currentLifter)}</strong> <span style="color:#666;">&mdash; ${liftLabel} attempt ${p.attemptNumber || ''}</span></div>
+      ${weightStr}
+    </div>`;
+    if (p.nextUp.length === 0) {
+      return `<div class="platform-row">${nowLiftingCard}</div>`;
+    }
     const nextLabels = p.nextUp.map((n, i) => {
       const label = i === 0 ? 'On deck' : 'In hole';
       const nLift = { squat: 'SQ', bench: 'BP', dead: 'DL', deadlift: 'DL' }[n.lift] || '';
-      return `<span style="color:#777;">${label}: <span style="color:#999;">${escHtml(n.name)}</span> <span style="color:#555;">${nLift}${n.attempt}</span></span>`;
-    }).join('<br>');
-    return `<div class="platform-status">
-      <div style="font-size:0.68rem;color:#666;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.2rem;">${escHtml(p.name)}</div>
-      <div><strong style="color:#F0F0F0;">${escHtml(p.currentLifter)}</strong> <span style="color:#666;">&mdash; ${liftLabel} attempt ${p.attemptNumber || ''}</span></div>
-      ${nextLabels ? `<div style="margin-top:0.25rem;font-size:0.82rem;">${nextLabels}</div>` : ''}
+      return `<div style="color:#777;margin-bottom:0.3rem;">${label}: <span style="color:#999;">${escHtml(n.name)}</span> <span style="color:#555;">${nLift}${n.attempt}</span></div>`;
+    }).join('');
+    const orderCard = `<div class="platform-status" style="flex:1;min-width:0;">
+      <div style="font-size:0.68rem;color:#666;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.2rem;">Up next</div>
+      <div style="font-size:0.82rem;">${nextLabels}</div>
     </div>`;
+    return `<div class="platform-row">${nowLiftingCard}${orderCard}</div>`;
   }).filter(Boolean).join('');
 
   // Detect which lift groups have any attempt data
@@ -1823,7 +1834,11 @@ ${FONT_LINKS}
   .nav a { color: #777; }
   .nav a:hover { color: #F0F0F0; }
   .page-heading { font-family: 'Bebas Neue', sans-serif; font-size: 1.75rem; letter-spacing: 0.06em; margin-bottom: 0.25rem; }
-  .platform-status { padding: 0.65rem 0.85rem; background: #0D0D0D; border: 1px solid #1F1F1F; border-radius: 8px; margin-bottom: 0.5rem; }
+  .platform-row { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
+  .platform-status { padding: 0.65rem 0.85rem; background: #0D0D0D; border: 1px solid #1F1F1F; border-radius: 8px; }
+  @media (max-width: 600px) {
+    .platform-row { flex-direction: column; }
+  }
   .filter-input { width: 100%; max-width: 300px; padding: 0.5rem 0.75rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.85rem; font-family: 'Outfit', sans-serif; margin-bottom: 1rem; }
   .filter-input:focus { outline: none; border-color: #DC2626; box-shadow: 0 0 0 3px rgba(220,38,38,0.1); }
   .scoresheet { width: 100%; border-collapse: collapse; }
@@ -1965,8 +1980,6 @@ ${FONT_LINKS}
   .filter-input:focus { outline: none; border-color: #DC2626; box-shadow: 0 0 0 3px rgba(220,38,38,0.1); }
   .filter-select { padding: 0.4rem 0.5rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.8rem; font-family: 'Outfit', sans-serif; cursor: pointer; }
   .filter-select:focus { outline: none; border-color: #DC2626; }
-  .scroll-btn { padding: 0.4rem 0.65rem; border-radius: 8px; border: 1px solid #DC2626; background: transparent; color: #DC2626; font-size: 0.75rem; font-family: 'Outfit', sans-serif; cursor: pointer; font-weight: 600; transition: all 0.2s; white-space: nowrap; }
-  .scroll-btn:hover { background: #DC2626; color: #fff; }
   .controls-right { margin-left: auto; display: flex; align-items: center; gap: 0.6rem; }
 
   /* Scoreboard table */
@@ -2092,7 +2105,6 @@ ${FONT_LINKS}
         <option value="dots">Sort: DOTS</option>
         <option value="name">Sort: Name</option>
       </select>
-      <button id="scroll-btn" class="scroll-btn" style="display:none;">Scroll to lifter</button>
       <button id="hypo-btn" class="hypo-btn">What If?</button>
       <button id="hypo-reset" class="hypo-reset" style="display:none;">Reset</button>
     </div>
@@ -2117,7 +2129,8 @@ const LIFT_LABEL = { squat: 'SQ', bench: 'BP', dead: 'DL', deadlift: 'DL' };
 let lastData = null;
 let currentFilters = { search: '', session: '', flight: '', wc: '', platform: '' };
 let currentSort = 'wc';
-let autoScroll = false;
+
+
 
 // Hypothetical mode state
 let hypotheticalMode = false;
@@ -2244,9 +2257,6 @@ function renderHero(data) {
   const hasActive = data.platforms.some(p => p.current);
   indicator.className = hasActive ? 'live-badge' : 'not-live-badge';
   indicator.innerHTML = hasActive ? '<span class="pulse-dot"></span>LIVE' : 'NOT ACTIVE';
-
-  // Show/hide scroll button
-  document.getElementById('scroll-btn').style.display = hasActive ? '' : 'none';
 
   const parts = data.platforms.map(p => {
     if (!p.current) return '';
@@ -2599,15 +2609,6 @@ function renderScoreboard(data) {
     '<tr>' + subHeaders + '</tr>' +
     '</thead><tbody>' + rows + '</tbody></table></div>';
 
-  // Auto-scroll to current lifter
-  if (autoScroll) scrollToCurrentLifter();
-}
-
-function scrollToCurrentLifter() {
-  const row = document.querySelector('tr.current-lifter');
-  if (row) {
-    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  }
 }
 
 function renderYT(data) {
@@ -2635,14 +2636,6 @@ document.getElementById('sort-by').addEventListener('change', function() {
   currentSort = this.value;
   if (lastData) renderScoreboard(lastData);
 });
-document.getElementById('scroll-btn').addEventListener('click', function() {
-  autoScroll = !autoScroll;
-  this.textContent = autoScroll ? 'Auto-scroll ON' : 'Scroll to lifter';
-  this.style.background = autoScroll ? '#DC2626' : 'transparent';
-  this.style.color = autoScroll ? '#fff' : '#DC2626';
-  if (autoScroll) scrollToCurrentLifter();
-});
-
 // Hypothetical mode toggle
 document.getElementById('hypo-btn').addEventListener('click', function() {
   hypotheticalMode = !hypotheticalMode;
@@ -2760,20 +2753,10 @@ document.addEventListener('keydown', function(e) {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
 
   switch (e.key) {
-    case 'f':
-    case 'F':
-      // Toggle auto-scroll / follow
-      document.getElementById('scroll-btn').click();
-      break;
     case 'h':
     case 'H':
       // Toggle hypothetical / what-if mode
       document.getElementById('hypo-btn').click();
-      break;
-    case 'g':
-    case 'G':
-      // Scroll to current lifter (one-time)
-      scrollToCurrentLifter();
       break;
     case '1': case '2': case '3': case '4': case '5':
       // Quick sort: 1=wc, 2=total, 3=dots, 4=name
