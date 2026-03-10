@@ -1892,6 +1892,16 @@ ${FONT_LINKS}
   .hero-att.current { background: rgba(251,191,36,0.15); color: #FBBF24; border-color: rgba(251,191,36,0.4); animation: pulse 1.5s infinite; }
   .hero-att.pending { background: #1A1A1A; color: #666; }
 
+  /* Referee lights */
+  .ref-lights { display: flex; justify-content: center; gap: 0.6rem; margin-top: 0.5rem; }
+  .ref-light { width: 22px; height: 22px; border-radius: 50%; border: 2px solid #333; transition: all 0.3s; }
+  .ref-light.good { background: #F0F0F0; border-color: #F0F0F0; box-shadow: 0 0 8px rgba(240,240,240,0.5); }
+  .ref-light.bad { background: #EF4444; border-color: #EF4444; box-shadow: 0 0 8px rgba(239,68,68,0.5); }
+  .ref-light.pending { background: #1A1A1A; border-color: #333; }
+
+  /* Gender section separator */
+  .gender-separator td { padding: 0.7rem 0.6rem 0.3rem; font-size: 0.72rem; color: #A78BFA; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; border-bottom: 2px solid #3b3261; background: #0D0B14; text-align: left; }
+
   /* Queue section */
   .queue-section { margin-bottom: 1.25rem; }
   .queue-label { font-size: 0.68rem; color: #666; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.5rem; font-weight: 600; }
@@ -2010,6 +2020,12 @@ ${FONT_LINKS}
   <div style="text-align:center;margin-top:1.5rem;">
     <a href="/" style="display:inline-block;padding:0.6rem 1.5rem;background:#DC2626;color:white;border-radius:8px;font-family:'Bebas Neue',sans-serif;font-size:1rem;letter-spacing:0.1em;transition:background 0.2s;">SUBSCRIBE TO A LIFTER</a>
   </div>
+  <div style="text-align:center;margin-top:0.75rem;font-size:0.68rem;color:#333;">
+    <kbd style="background:#1A1A1A;padding:0.1rem 0.35rem;border-radius:3px;border:1px solid #333;color:#666;">F</kbd> follow &nbsp;
+    <kbd style="background:#1A1A1A;padding:0.1rem 0.35rem;border-radius:3px;border:1px solid #333;color:#666;">G</kbd> go to lifter &nbsp;
+    <kbd style="background:#1A1A1A;padding:0.1rem 0.35rem;border-radius:3px;border:1px solid #333;color:#666;">/</kbd> search &nbsp;
+    <kbd style="background:#1A1A1A;padding:0.1rem 0.35rem;border-radius:3px;border:1px solid #333;color:#666;">1-4</kbd> sort
+  </div>
 </div>
 <script>
 const MEET_ID = '${escHtml(meetId)}';
@@ -2092,13 +2108,23 @@ function renderHero(data) {
       if (attHtml) attBar = '<div class="hero-attempts">' + attHtml + '</div>';
     }
 
-    return '<div class="hero-label">' + (data.platforms.length > 1 ? esc(p.name || 'Platform') + ' &mdash; ' : '') + 'NOW LIFTING</div>' +
+    let html = '<div class="hero-label">' + (data.platforms.length > 1 ? esc(p.name || 'Platform') + ' &mdash; ' : '') + 'NOW LIFTING</div>' +
       '<div class="hero-name"><a href="' + opLink(p.current.lifterName) + '" target="_blank" style="color:inherit;text-decoration:none;">' + esc(p.current.lifterName) + '</a></div>' +
       '<div class="hero-detail">' + label + ' attempt ' + (p.current.attemptNumber || '') +
         (lifter && lifter.bodyWeight ? ' &middot; ' + lifter.bodyWeight + 'kg' : '') +
-        (lifter && lifter.flight ? ' &middot; Flight ' + lifter.flight : '') + '</div>' +
+        (lifter && lifter.flight ? ' &middot; Flight ' + lifter.flight : '') +
+        (lifter && lifter.division ? ' &middot; ' + esc(lifter.division) : '') + '</div>' +
       (p.current.weight ? '<div class="hero-weight">' + p.current.weight + ' kg</div>' : '') +
       attBar;
+
+    // Referee lights (3 circles: white=good, red=bad, dark=pending)
+    if (p.refLights) {
+      html += '<div class="ref-lights">' +
+        p.refLights.map(r => '<div class="ref-light ' + (r === 'good' ? 'good' : r === 'bad' ? 'bad' : 'pending') + '"></div>').join('') +
+        '</div>';
+    }
+
+    return html;
   }).filter(Boolean);
   el.innerHTML = parts.length ? parts.join('<hr style="border:none;border-top:1px solid #252525;margin:0.75rem 0;">') : '<div class="empty-state">No active lifter</div>';
 }
@@ -2276,15 +2302,27 @@ function renderScoreboard(data) {
 
   // Body rows
   let lastWc = null;
+  let lastGender = null;
   const showWcSep = currentSort === 'wc';
   const totalColCount = 4 + attemptCols.length + (hasSubTotal ? 1 : 0) + 2;
 
   const rows = lifters.map(l => {
     let sep = '';
-    if (showWcSep && l.weightClass !== lastWc) {
-      lastWc = l.weightClass;
-      const wcLabel = l.weightClass ? (typeof l.weightClass === 'number' ? l.weightClass + ' kg' : l.weightClass) : 'Unknown';
-      sep = '<tr class="wc-separator"><td colspan="' + totalColCount + '">' + wcLabel + '</td></tr>';
+    if (showWcSep) {
+      // Gender separator (Men / Women)
+      const g = l.gender && /^f/i.test(l.gender) ? 'F' : 'M';
+      if (g !== lastGender) {
+        lastGender = g;
+        lastWc = null; // reset wc when gender changes
+        const gLabel = g === 'F' ? 'WOMEN' : 'MEN';
+        sep += '<tr class="gender-separator"><td colspan="' + totalColCount + '">' + gLabel + '</td></tr>';
+      }
+      // Weight class separator
+      if (l.weightClass !== lastWc) {
+        lastWc = l.weightClass;
+        const wcLabel = l.weightClass ? (typeof l.weightClass === 'number' ? l.weightClass + ' kg' : l.weightClass) : 'Unknown';
+        sep += '<tr class="wc-separator"><td colspan="' + totalColCount + '">' + wcLabel + '</td></tr>';
+      }
     }
 
     const bombed = isBombedOut(l);
@@ -2294,6 +2332,7 @@ function renderScoreboard(data) {
     // Name
     row += '<td class="col-name"><a href="' + opLink(l.name) + '" target="_blank">' + esc(l.name) + '</a>';
     if (l.team) row += ' <span style="color:#555;font-size:0.62rem;">' + esc(l.team) + '</span>';
+    if (l.division) row += '<br><span style="color:#666;font-size:0.58rem;font-weight:400;">' + esc(l.division) + '</span>';
     row += '</td>';
 
     // Place
@@ -2423,6 +2462,44 @@ async function poll() {
 
 poll();
 setInterval(poll, 5000);
+
+// Keyboard shortcuts
+document.addEventListener('keydown', function(e) {
+  // Don't capture when typing in inputs
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+
+  switch (e.key) {
+    case 'f':
+    case 'F':
+      // Toggle auto-scroll / follow
+      document.getElementById('scroll-btn').click();
+      break;
+    case 'g':
+    case 'G':
+      // Scroll to current lifter (one-time)
+      scrollToCurrentLifter();
+      break;
+    case '1': case '2': case '3': case '4': case '5':
+      // Quick sort: 1=wc, 2=total, 3=dots, 4=name
+      const sortMap = { '1': 'wc', '2': 'total', '3': 'dots', '4': 'name' };
+      if (sortMap[e.key]) {
+        currentSort = sortMap[e.key];
+        document.getElementById('sort-by').value = currentSort;
+        if (lastData) renderScoreboard(lastData);
+      }
+      break;
+    case '/':
+      e.preventDefault();
+      document.getElementById('search-input').focus();
+      break;
+    case 'Escape':
+      document.getElementById('search-input').blur();
+      document.getElementById('search-input').value = '';
+      currentFilters.search = '';
+      if (lastData) renderScoreboard(lastData);
+      break;
+  }
+});
 </script>
 </body></html>`;
 }
@@ -3225,9 +3302,28 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
         const order = computeAttemptOrder(st, pid);
         const currentIdx = platform.currentAttemptId ? order.findIndex(a => a.attemptId === platform.currentAttemptId) : -1;
         const queue = currentIdx >= 0 ? order.slice(currentIdx + 1, currentIdx + 9) : order.slice(0, 8);
+        // Extract referee decisions from current attempt (LiftingCast format)
+        let refLights = null;
+        if (currentAttempt?.decisions) {
+          const d = currentAttempt.decisions;
+          refLights = ['left', 'head', 'right'].map(pos => {
+            const ref = d[pos];
+            if (!ref || !ref.decision) return null;
+            return ref.decision; // "good" or "bad"
+          });
+          // Only include if at least one ref has voted
+          if (refLights.every(r => r === null)) refLights = null;
+        }
+        // Platform clock state
+        const clockState = platform.clockState || null;
+        const clockTimerLength = platform.clockTimerLength || 60000;
+
         return {
           id: pid,
           name: platform.name || pid,
+          clockState,
+          clockTimerLength,
+          refLights,
           current: currentLifter ? {
             lifterName: currentLifter.name || 'Unknown',
             liftName: parsed.liftName,
@@ -3275,6 +3371,10 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
         const attempts = lifterAttempts[l._id] || {};
         // DOTS coefficient calculation
         const dots = (total > 0 && l.bodyWeight > 0) ? computeDOTS(l.bodyWeight, total, l.gender) : null;
+        // Resolve division names from meet's division docs
+        const divisionNames = (l.divisions || [])
+          .map(d => st.divisions[d.divisionId]?.name)
+          .filter(Boolean);
         return {
           id: l._id,
           name: l.name,
@@ -3282,6 +3382,7 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
           bodyWeight: l.bodyWeight || null,
           weightClass: getWeightClass(l.bodyWeight, l.gender, l.declaredWeightClass),
           gender: l.gender || null,
+          division: divisionNames.length > 0 ? divisionNames[0] : null,
           flight: l.flight || null,
           session: l.session || null,
           lot: l.lot || null,
@@ -3297,7 +3398,11 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
           platformId: l.platformId || null,
         };
       });
+      // Sort: gender (M first), then weight class, then bodyweight, then name
       lifters.sort((a, b) => {
+        const gA = a.gender && /^f/i.test(a.gender) ? 1 : 0;
+        const gB = b.gender && /^f/i.test(b.gender) ? 1 : 0;
+        if (gA !== gB) return gA - gB;
         const wcA = typeof a.weightClass === 'number' ? a.weightClass : 9999;
         const wcB = typeof b.weightClass === 'number' ? b.weightClass : 9999;
         if (wcA !== wcB) return wcA - wcB;
@@ -3307,7 +3412,7 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
         return a.name.localeCompare(b.name);
       });
 
-      // Compute placement within weight class
+      // Compute placement within weight class (gender-specific)
       const byWc = {};
       for (const l of lifters) {
         const wcKey = `${l.gender || ''}:${l.weightClass || ''}`;
