@@ -1949,8 +1949,11 @@ ${FONT_LINKS}
   .yt-link { font-size: 0.85rem; font-family: 'Outfit', sans-serif; color: #DC2626; font-weight: 500; }
   .yt-link:hover { color: #EF4444; }
 
+  /* Hero + Queue side-by-side row */
+  .hero-queue-row { display: flex; gap: 0.75rem; margin-bottom: 1rem; }
+
   /* Hero / current lifter section */
-  .hero { background: #141414; border: 1px solid #1F1F1F; border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem; text-align: center; }
+  .hero { background: #141414; border: 1px solid #1F1F1F; border-radius: 12px; padding: 1.25rem; text-align: center; flex: 1; min-width: 0; }
   .hero-label { font-size: 0.68rem; color: #666; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.3rem; }
   .hero-name { font-family: 'Bebas Neue', sans-serif; font-size: 2rem; letter-spacing: 0.04em; color: #F0F0F0; }
   .hero-detail { font-size: 0.9rem; color: #777; margin-top: 0.15rem; }
@@ -1973,7 +1976,7 @@ ${FONT_LINKS}
   .gender-separator td { padding: 0.7rem 0.6rem 0.3rem; font-size: 0.72rem; color: #A78BFA; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; border-bottom: 2px solid #3b3261; background: #0D0B14; text-align: left; }
 
   /* Queue section */
-  .queue-section { margin-bottom: 1.25rem; }
+  .queue-section { flex: 1; min-width: 0; }
   .queue-label { font-size: 0.68rem; color: #666; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.5rem; font-weight: 600; }
   .queue-item { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0.75rem; background: #0D0D0D; border: 1px solid #1A1A1A; border-radius: 8px; margin-bottom: 0.35rem; font-size: 0.88rem; }
   .queue-pos { color: #555; font-size: 0.75rem; font-weight: 600; min-width: 1.2rem; }
@@ -2097,8 +2100,10 @@ ${FONT_LINKS}
   </div>
   <div class="page-heading">${escHtml(meetName)} <span id="live-indicator" class="live-badge"><span class="pulse-dot"></span>LIVE</span></div>
   <div id="meet-meta" class="meet-meta"></div>
-  <div id="hero" class="hero"><div class="empty-state">Loading...</div></div>
-  <div id="queue" class="queue-section"></div>
+  <div class="hero-queue-row">
+    <div id="hero" class="hero"><div class="empty-state">Loading...</div></div>
+    <div id="queue" class="queue-section"></div>
+  </div>
   <div style="font-size:0.72rem;color:#666;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem;font-weight:600;display:flex;align-items:center;gap:0.5rem;">SCOREBOARD <span id="lifter-count" style="color:#444;font-weight:400;text-transform:none;"></span></div>
   <div class="controls">
     <input type="text" id="search-input" class="filter-input" placeholder="Search lifters...">
