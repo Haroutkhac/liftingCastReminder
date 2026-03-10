@@ -1867,10 +1867,12 @@ ${FONT_LINKS}
   ${SHARED_STYLES}
   body { padding: 1.5rem 0.75rem; }
   .container { max-width: 1400px; margin: 0 auto; }
-  .nav { margin-bottom: 1.5rem; font-size: 0.85rem; }
+  .nav { margin-bottom: 1.5rem; font-size: 0.85rem; display: flex; align-items: center; justify-content: space-between; }
   .nav a { color: #777; }
   .nav a:hover { color: #F0F0F0; }
-  .page-heading { font-family: 'Bebas Neue', sans-serif; font-size: 1.75rem; letter-spacing: 0.06em; margin-bottom: 0.25rem; display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+  .page-heading { font-family: 'Bebas Neue', sans-serif; font-size: 1.75rem; letter-spacing: 0.06em; margin-bottom: 0.15rem; display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+  .meet-meta { font-size: 0.78rem; color: #555; margin-bottom: 1rem; display: flex; gap: 1rem; flex-wrap: wrap; }
+  .meet-meta span { display: inline-flex; align-items: center; gap: 0.3rem; }
   .live-badge { display: inline-flex; align-items: center; gap: 0.35rem; background: #22C55E; color: #fff; font-size: 0.7rem; font-family: 'Outfit', sans-serif; font-weight: 600; padding: 0.2rem 0.6rem; border-radius: 4px; letter-spacing: 0.08em; text-transform: uppercase; }
   .live-badge .pulse-dot { width: 6px; height: 6px; background: #fff; border-radius: 50%; animation: pulse 1.5s infinite; }
   .not-live-badge { display: inline-flex; align-items: center; gap: 0.35rem; background: #555; color: #fff; font-size: 0.7rem; font-family: 'Outfit', sans-serif; font-weight: 600; padding: 0.2rem 0.6rem; border-radius: 4px; letter-spacing: 0.08em; text-transform: uppercase; }
@@ -1883,6 +1885,12 @@ ${FONT_LINKS}
   .hero-name { font-family: 'Bebas Neue', sans-serif; font-size: 2rem; letter-spacing: 0.04em; color: #F0F0F0; }
   .hero-detail { font-size: 0.9rem; color: #777; margin-top: 0.15rem; }
   .hero-weight { font-size: 1.5rem; font-weight: 700; color: #DC2626; margin-top: 0.25rem; }
+  .hero-attempts { display: flex; justify-content: center; gap: 0.5rem; margin-top: 0.6rem; flex-wrap: wrap; }
+  .hero-att { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; border: 1px solid #252525; }
+  .hero-att.good { background: rgba(74,222,128,0.12); color: #4ADE80; border-color: rgba(74,222,128,0.3); }
+  .hero-att.miss { background: rgba(239,68,68,0.12); color: #EF4444; border-color: rgba(239,68,68,0.3); text-decoration: line-through; }
+  .hero-att.current { background: rgba(251,191,36,0.15); color: #FBBF24; border-color: rgba(251,191,36,0.4); animation: pulse 1.5s infinite; }
+  .hero-att.pending { background: #1A1A1A; color: #666; }
 
   /* Queue section */
   .queue-section { margin-bottom: 1.25rem; }
@@ -1895,19 +1903,22 @@ ${FONT_LINKS}
   .queue-detail { color: #555; font-size: 0.82rem; margin-left: auto; white-space: nowrap; }
 
   /* Controls bar */
-  .controls { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; }
-  .filter-input { width: 100%; max-width: 220px; padding: 0.45rem 0.7rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.82rem; font-family: 'Outfit', sans-serif; }
+  .controls { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .filter-input { width: 100%; max-width: 200px; padding: 0.4rem 0.65rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.8rem; font-family: 'Outfit', sans-serif; }
   .filter-input:focus { outline: none; border-color: #DC2626; box-shadow: 0 0 0 3px rgba(220,38,38,0.1); }
-  .filter-select { padding: 0.45rem 0.6rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.82rem; font-family: 'Outfit', sans-serif; cursor: pointer; }
+  .filter-select { padding: 0.4rem 0.5rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.8rem; font-family: 'Outfit', sans-serif; cursor: pointer; }
   .filter-select:focus { outline: none; border-color: #DC2626; }
+  .scroll-btn { padding: 0.4rem 0.65rem; border-radius: 8px; border: 1px solid #DC2626; background: transparent; color: #DC2626; font-size: 0.75rem; font-family: 'Outfit', sans-serif; cursor: pointer; font-weight: 600; transition: all 0.2s; white-space: nowrap; }
+  .scroll-btn:hover { background: #DC2626; color: #fff; }
+  .controls-right { margin-left: auto; display: flex; align-items: center; gap: 0.6rem; }
 
   /* Scoreboard table */
-  .table-wrap { overflow-x: auto; border: 1px solid #1F1F1F; border-radius: 12px; background: #0A0A0A; }
+  .table-wrap { overflow-x: auto; border: 1px solid #1F1F1F; border-radius: 12px; background: #0A0A0A; position: relative; }
   .sb { width: 100%; border-collapse: collapse; white-space: nowrap; }
   .sb thead th { position: sticky; top: 0; background: #0A0A0A; z-index: 3; padding: 0.3rem 0.25rem; font-size: 0.6rem; color: #666; text-transform: uppercase; letter-spacing: 0.06em; text-align: center; border-bottom: 1px solid #252525; font-weight: 600; }
   .sb thead .group-header { color: #DC2626; font-size: 0.6rem; letter-spacing: 0.1em; border-bottom: 1px solid #252525; padding: 0.4rem 0; }
   .sb thead th.col-name { text-align: left; padding-left: 0.6rem; min-width: 140px; position: sticky; left: 0; background: #0A0A0A; z-index: 4; border-right: 2px solid #252525; }
-  .sb tbody td { padding: 0.35rem 0.25rem; text-align: center; font-size: 0.8rem; border-bottom: 1px solid #1A1A1A; color: #BBB; }
+  .sb tbody td { padding: 0.35rem 0.25rem; text-align: center; font-size: 0.8rem; border-bottom: 1px solid #1A1A1A; color: #BBB; transition: background 0.3s; }
   .sb tbody td.col-name {
     text-align: left; padding-left: 0.6rem; font-weight: 500; font-size: 0.8rem;
     position: sticky; left: 0; background: #0A0A0A; z-index: 1;
@@ -1916,37 +1927,35 @@ ${FONT_LINKS}
   .sb tbody td.col-name a { color: inherit; }
   .sb tbody td.col-name a:hover { color: #DC2626; }
 
-  /* Attempt cells */
-  .att { font-size: 0.78rem; font-variant-numeric: tabular-nums; min-width: 42px; }
-  .att.good { color: #4ADE80; font-weight: 600; }
-  .att.miss { color: #EF4444; text-decoration: line-through; font-weight: 400; }
-  .att.open { color: #888; }
-  .att.current { color: #FBBF24; font-weight: 700; background: rgba(251,191,36,0.08); }
+  /* Attempt cells — no more BEST columns, best lift is color-coded directly */
+  .att { font-size: 0.78rem; font-variant-numeric: tabular-nums; min-width: 44px; }
+  .att.good { color: #4ADE80; }
+  .att.good-best { color: #F0F0F0; font-weight: 700; background: rgba(74,222,128,0.1); }
+  .att.miss { color: #EF4444; text-decoration: line-through; opacity: 0.7; }
+  .att.open { color: #777; font-style: italic; }
+  .att.current-att { color: #FBBF24; font-weight: 700; background: rgba(251,191,36,0.1); animation: pulse 1.5s infinite; }
   .att.empty { color: #333; }
 
-  /* Best / total cells */
-  .best-cell { font-weight: 600; color: #F0F0F0; min-width: 44px; }
+  /* Total / summary cells */
   .total-cell { font-weight: 700; color: #F0F0F0; min-width: 48px; font-size: 0.85rem; }
-  .subtotal-cell { font-weight: 500; color: #CCC; min-width: 44px; }
-  .dots-cell { color: #A78BFA; font-weight: 600; min-width: 48px; }
-  .place-cell { font-weight: 700; min-width: 32px; }
+  .subtotal-cell { font-weight: 500; color: #AAA; min-width: 44px; }
+  .dots-cell { color: #A78BFA; font-weight: 600; min-width: 50px; }
+  .place-cell { font-weight: 700; min-width: 30px; }
   .place-1 { color: #FFD700; }
   .place-2 { color: #C0C0C0; }
   .place-3 { color: #CD7F32; }
 
   /* Separator rows */
-  .wc-separator td { padding: 0.6rem 0.6rem 0.3rem; font-size: 0.68rem; color: #DC2626; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; border-bottom: 2px solid #252525; background: #0F0F0F; text-align: left; }
+  .wc-separator td { padding: 0.55rem 0.6rem 0.25rem; font-size: 0.68rem; color: #DC2626; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; border-bottom: 2px solid #252525; background: #0F0F0F; text-align: left; }
 
   /* Current lifter highlight row */
-  .sb tbody tr.current-lifter td { background: rgba(220, 38, 38, 0.06); }
-  .sb tbody tr.current-lifter td.col-name { background: rgba(220, 38, 38, 0.06); }
+  .sb tbody tr.current-lifter td { background: rgba(251,191,36,0.04); }
+  .sb tbody tr.current-lifter td.col-name { background: rgba(251,191,36,0.04); border-left: 3px solid #FBBF24; padding-left: calc(0.6rem - 3px); }
   .sb tbody tr:hover td { background: #141414; }
   .sb tbody tr:hover td.col-name { background: #141414; }
 
   /* Flight/session badge */
   .flight-badge { display: inline-block; font-size: 0.6rem; color: #555; font-weight: 600; margin-left: 0.3rem; }
-
-  .meta-row { display: flex; gap: 0.5rem; font-size: 0.72rem; color: #555; margin-bottom: 0.25rem; }
 
   .updated-ago { font-size: 0.75rem; color: #444; margin-top: 0.5rem; text-align: center; }
   .empty-state { text-align: center; padding: 2rem 1rem; color: #555; }
@@ -1954,28 +1963,47 @@ ${FONT_LINKS}
   /* Border between lift groups */
   .group-border-left { border-left: 2px solid #252525; }
 
-  @media (max-width: 600px) {
+  /* Bombed-out lifter (all 3 misses on a lift) */
+  .sb tbody tr.bombed-out td { opacity: 0.45; }
+  .sb tbody tr.bombed-out td.col-name { opacity: 0.65; }
+
+  @media (max-width: 700px) {
     .sb tbody td { font-size: 0.72rem; padding: 0.3rem 0.15rem; }
     .sb thead th { font-size: 0.55rem; padding: 0.25rem 0.15rem; }
-    .sb tbody td.col-name { font-size: 0.72rem; min-width: 110px; padding-left: 0.4rem; }
-    .att { min-width: 34px; font-size: 0.7rem; }
+    .sb tbody td.col-name { font-size: 0.72rem; min-width: 100px; padding-left: 0.35rem; }
+    .att { min-width: 32px; font-size: 0.68rem; }
     .hero-name { font-size: 1.5rem; }
-    .controls { gap: 0.5rem; }
-    .filter-input { max-width: 160px; }
+    .controls { gap: 0.4rem; }
+    .filter-input { max-width: 140px; font-size: 0.75rem; }
+    .filter-select { font-size: 0.75rem; padding: 0.35rem 0.4rem; }
+    .container { max-width: 100%; }
   }
 </style>
 </head><body><div class="container animate-in">
-  <div class="nav"><a href="/meets/${escHtml(meetId)}">&larr; Meet details</a></div>
+  <div class="nav">
+    <a href="/meets/${escHtml(meetId)}">&larr; Meet details</a>
+    <div id="yt-link-wrap"></div>
+  </div>
   <div class="page-heading">${escHtml(meetName)} <span id="live-indicator" class="live-badge"><span class="pulse-dot"></span>LIVE</span></div>
-  <div id="yt-link-wrap"></div>
+  <div id="meet-meta" class="meet-meta"></div>
   <div id="hero" class="hero"><div class="empty-state">Loading...</div></div>
   <div id="queue" class="queue-section"></div>
-  <div style="font-size:0.72rem;color:#666;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem;font-weight:600;">SCOREBOARD</div>
+  <div style="font-size:0.72rem;color:#666;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem;font-weight:600;display:flex;align-items:center;gap:0.5rem;">SCOREBOARD <span id="lifter-count" style="color:#444;font-weight:400;text-transform:none;"></span></div>
   <div class="controls">
     <input type="text" id="search-input" class="filter-input" placeholder="Search lifters...">
+    <select id="platform-filter" class="filter-select"><option value="">All Platforms</option></select>
     <select id="session-filter" class="filter-select"><option value="">All Sessions</option></select>
     <select id="flight-filter" class="filter-select"><option value="">All Flights</option></select>
-    <select id="wc-filter" class="filter-select"><option value="">All Weight Classes</option></select>
+    <select id="wc-filter" class="filter-select"><option value="">All Classes</option></select>
+    <div class="controls-right">
+      <select id="sort-by" class="filter-select">
+        <option value="wc">Sort: Weight Class</option>
+        <option value="total">Sort: Total</option>
+        <option value="dots">Sort: DOTS</option>
+        <option value="name">Sort: Name</option>
+      </select>
+      <button id="scroll-btn" class="scroll-btn" style="display:none;">Scroll to lifter</button>
+    </div>
   </div>
   <div id="scoresheet"></div>
   <div id="updated" class="updated-ago"></div>
@@ -1986,9 +2014,10 @@ ${FONT_LINKS}
 <script>
 const MEET_ID = '${escHtml(meetId)}';
 const LIFT_LABEL = { squat: 'SQ', bench: 'BP', dead: 'DL', deadlift: 'DL' };
-const ATT_KEYS = ['sq1','sq2','sq3','bp1','bp2','bp3','dl1','dl2','dl3'];
 let lastData = null;
-let currentFilters = { search: '', session: '', flight: '', wc: '' };
+let currentFilters = { search: '', session: '', flight: '', wc: '', platform: '' };
+let currentSort = 'wc';
+let autoScroll = false;
 
 function opLink(name) {
   const slug = name.toLowerCase().replace(/[^a-z]/g, '');
@@ -2001,6 +2030,31 @@ function esc(s) {
   return d.innerHTML;
 }
 
+// Determine if a lifter bombed out (3 misses on any completed lift group)
+function isBombedOut(l) {
+  const atts = l.attempts || {};
+  const groups = [['sq1','sq2','sq3'],['bp1','bp2','bp3'],['dl1','dl2','dl3']];
+  for (const g of groups) {
+    const results = g.map(k => atts[k]).filter(a => a && a.result);
+    if (results.length === 3 && results.every(a => a.result === 'bad')) return true;
+  }
+  return false;
+}
+
+// Find best good attempt for a lift group (returns the key, e.g. 'sq2')
+function bestAttemptKey(atts, prefix) {
+  let bestKey = null, bestWeight = 0;
+  for (let i = 1; i <= 3; i++) {
+    const k = prefix + i;
+    const a = atts[k];
+    if (a && a.result === 'good' && a.weight > bestWeight) {
+      bestWeight = a.weight;
+      bestKey = k;
+    }
+  }
+  return bestKey;
+}
+
 function renderHero(data) {
   const el = document.getElementById('hero');
   const indicator = document.getElementById('live-indicator');
@@ -2011,13 +2065,40 @@ function renderHero(data) {
   const hasActive = data.platforms.some(p => p.current);
   indicator.className = hasActive ? 'live-badge' : 'not-live-badge';
   indicator.innerHTML = hasActive ? '<span class="pulse-dot"></span>LIVE' : 'NOT ACTIVE';
+
+  // Show/hide scroll button
+  document.getElementById('scroll-btn').style.display = hasActive ? '' : 'none';
+
   const parts = data.platforms.map(p => {
     if (!p.current) return '';
     const label = LIFT_LABEL[p.current.liftName] || p.current.liftName || '';
-    return '<div class="hero-label">' + (p.name || 'Platform') + ' &mdash; NOW LIFTING</div>' +
+
+    // Find this lifter's data for attempt history
+    const lifter = data.lifters ? data.lifters.find(l => l.name === p.current.lifterName) : null;
+    let attBar = '';
+    if (lifter && lifter.attempts) {
+      const allKeys = ['sq1','sq2','sq3','bp1','bp2','bp3','dl1','dl2','dl3'];
+      const attHtml = allKeys.map(k => {
+        const a = lifter.attempts[k];
+        if (!a || !a.weight) return '';
+        const lbl = k.slice(0,2).toUpperCase() + k.slice(2);
+        let cls = 'hero-att ';
+        if (lifter.currentAttemptKey === k) cls += 'current';
+        else if (a.result === 'good') cls += 'good';
+        else if (a.result === 'bad') cls += 'miss';
+        else cls += 'pending';
+        return '<span class="' + cls + '" title="' + lbl + '">' + a.weight + '</span>';
+      }).filter(Boolean).join('');
+      if (attHtml) attBar = '<div class="hero-attempts">' + attHtml + '</div>';
+    }
+
+    return '<div class="hero-label">' + (data.platforms.length > 1 ? esc(p.name || 'Platform') + ' &mdash; ' : '') + 'NOW LIFTING</div>' +
       '<div class="hero-name"><a href="' + opLink(p.current.lifterName) + '" target="_blank" style="color:inherit;text-decoration:none;">' + esc(p.current.lifterName) + '</a></div>' +
-      '<div class="hero-detail">' + label + ' attempt ' + (p.current.attemptNumber || '') + '</div>' +
-      (p.current.weight ? '<div class="hero-weight">' + p.current.weight + ' kg</div>' : '');
+      '<div class="hero-detail">' + label + ' attempt ' + (p.current.attemptNumber || '') +
+        (lifter && lifter.bodyWeight ? ' &middot; ' + lifter.bodyWeight + 'kg' : '') +
+        (lifter && lifter.flight ? ' &middot; Flight ' + lifter.flight : '') + '</div>' +
+      (p.current.weight ? '<div class="hero-weight">' + p.current.weight + ' kg</div>' : '') +
+      attBar;
   }).filter(Boolean);
   el.innerHTML = parts.length ? parts.join('<hr style="border:none;border-top:1px solid #252525;margin:0.75rem 0;">') : '<div class="empty-state">No active lifter</div>';
 }
@@ -2043,13 +2124,28 @@ function renderQueue(data) {
   el.innerHTML = parts.join('');
 }
 
+function renderMeta(data) {
+  const el = document.getElementById('meet-meta');
+  if (!data.lifters) { el.innerHTML = ''; return; }
+  const total = data.lifters.length;
+  const withTotal = data.lifters.filter(l => l.total > 0).length;
+  const platforms = data.platforms ? data.platforms.length : 0;
+  const parts = [];
+  if (data.meet && data.meet.date) parts.push('<span>' + esc(data.meet.date) + '</span>');
+  parts.push('<span>' + total + ' lifters</span>');
+  if (withTotal > 0 && withTotal < total) parts.push('<span>' + withTotal + ' with totals</span>');
+  if (platforms > 1) parts.push('<span>' + platforms + ' platforms</span>');
+  el.innerHTML = parts.join('<span style="color:#333;">&bull;</span>');
+}
+
 function populateFilters(data) {
   if (!data.lifters) return;
-  const sessions = new Set(), flights = new Set(), wcs = new Set();
+  const sessions = new Set(), flights = new Set(), wcs = new Set(), platforms = new Set();
   for (const l of data.lifters) {
     if (l.session) sessions.add(l.session);
     if (l.flight) flights.add(l.flight);
     if (l.weightClass) wcs.add(l.weightClass);
+    if (l.platformId) platforms.add(l.platformId);
   }
 
   function updateOptions(sel, values, labelFn) {
@@ -2062,44 +2158,82 @@ function populateFilters(data) {
     }
   }
 
+  // Only show platform filter if multiple platforms
+  const platformSel = document.getElementById('platform-filter');
+  if (platforms.size > 1 && data.platforms) {
+    platformSel.style.display = '';
+    const platformMap = {};
+    for (const p of data.platforms) platformMap[p.id] = p.name || p.id;
+    updateOptions(platformSel, platforms, v => platformMap[v] || v);
+  } else {
+    platformSel.style.display = 'none';
+  }
+
   updateOptions(document.getElementById('session-filter'), sessions, v => 'Session ' + v);
   updateOptions(document.getElementById('flight-filter'), flights, v => 'Flight ' + v);
   updateOptions(document.getElementById('wc-filter'), wcs, v => (typeof v === 'number' ? v + ' kg' : v));
+}
+
+function sortLifters(lifters, sortBy) {
+  const copy = [...lifters];
+  switch (sortBy) {
+    case 'total':
+      copy.sort((a, b) => (b.total || 0) - (a.total || 0) || a.name.localeCompare(b.name));
+      break;
+    case 'dots':
+      copy.sort((a, b) => (b.dots || 0) - (a.dots || 0) || a.name.localeCompare(b.name));
+      break;
+    case 'name':
+      copy.sort((a, b) => a.name.localeCompare(b.name));
+      break;
+    default: // 'wc' — weight class grouping (already sorted from API)
+      break;
+  }
+  return copy;
 }
 
 function renderScoreboard(data) {
   const el = document.getElementById('scoresheet');
   if (!data.lifters || data.lifters.length === 0) {
     el.innerHTML = '<div class="empty-state">No lifter data yet</div>';
+    document.getElementById('lifter-count').textContent = '';
     return;
   }
 
-  let lifters = data.lifters;
+  const allLifters = data.lifters;
 
-  // Detect which lift groups have data
-  const hasAnyAttempt = (prefix) => lifters.some(l => l.attempts && (l.attempts[prefix+'1'] || l.attempts[prefix+'2'] || l.attempts[prefix+'3']));
+  // Detect which lift groups have data (check all lifters before filtering)
+  const hasAnyAttempt = (prefix) => allLifters.some(l => l.attempts && (l.attempts[prefix+'1'] || l.attempts[prefix+'2'] || l.attempts[prefix+'3']));
   const hasSq = hasAnyAttempt('sq');
   const hasBp = hasAnyAttempt('bp');
   const hasDl = hasAnyAttempt('dl');
 
   if (!hasSq && !hasBp && !hasDl) {
     el.innerHTML = '<div class="empty-state">Lifting hasn\\'t started yet &mdash; results will appear as attempts are recorded.</div>';
+    document.getElementById('lifter-count').textContent = '(' + allLifters.length + ' registered)';
     return;
   }
 
   // Apply filters
-  const { search, session, flight, wc } = currentFilters;
-  if (search || session || flight || wc) {
+  let lifters = allLifters;
+  const { search, session, flight, wc, platform } = currentFilters;
+  if (search || session || flight || wc || platform) {
     lifters = lifters.filter(l => {
       if (search && !l.name.toLowerCase().includes(search)) return false;
       if (session && String(l.session) !== session) return false;
       if (flight && l.flight !== flight) return false;
       if (wc && String(l.weightClass) !== wc) return false;
+      if (platform && l.platformId !== platform) return false;
       return true;
     });
   }
 
-  // Build column definitions
+  // Sort
+  lifters = sortLifters(lifters, currentSort);
+
+  document.getElementById('lifter-count').textContent = '(' + lifters.length + (lifters.length !== allLifters.length ? ' of ' + allLifters.length : '') + ')';
+
+  // Build column definitions — NO BEST columns, attempts only
   const attemptCols = [];
   if (hasSq) attemptCols.push('sq1','sq2','sq3');
   if (hasBp) attemptCols.push('bp1','bp2','bp3');
@@ -2107,14 +2241,13 @@ function renderScoreboard(data) {
 
   // Group header row
   const groups = [];
-  // Name + Place + Flight + BW take up 4 cols before attempts
-  const preCols = 4;
-  groups.push({ label: '', cols: preCols }); // placeholder for non-grouped pre-cols
-  if (hasSq) groups.push({ label: 'SQUAT', cols: 4 }); // 3 attempts + best
-  if (hasBp) groups.push({ label: 'BENCH', cols: 4 });
-  if (hasDl) groups.push({ label: 'DEADLIFT', cols: 4 });
-  // Sub-total, Total, DOTS
-  const postCols = (hasSq && hasBp ? 1 : 0) + 1 + 1; // subtotal (only if sq+bp), total, dots
+  const preCols = 4; // Name + Place + Flight + BW
+  groups.push({ label: '', cols: preCols });
+  if (hasSq) groups.push({ label: 'SQUAT', cols: 3 });
+  if (hasBp) groups.push({ label: 'BENCH', cols: 3 });
+  if (hasDl) groups.push({ label: 'DEADLIFT', cols: 3 });
+  const hasSubTotal = hasSq && hasBp;
+  const postCols = (hasSubTotal ? 1 : 0) + 1 + 1; // sub, total, dots
   groups.push({ label: '', cols: postCols });
 
   const groupHeaderRow = groups.map(g =>
@@ -2124,10 +2257,10 @@ function renderScoreboard(data) {
   ).join('');
 
   // Sub-header row
-  let subHeaders = '<th class="col-name" rowspan="1" style="border-bottom:2px solid #252525;">LIFTER</th>';
-  subHeaders += '<th style="min-width:28px;border-bottom:2px solid #252525;">#</th>'; // place
-  subHeaders += '<th style="min-width:32px;border-bottom:2px solid #252525;">FLT</th>'; // flight
-  subHeaders += '<th style="min-width:38px;border-bottom:2px solid #252525;">BW</th>'; // bodyweight
+  let subHeaders = '<th class="col-name" style="border-bottom:2px solid #252525;">LIFTER</th>';
+  subHeaders += '<th style="min-width:26px;border-bottom:2px solid #252525;">#</th>';
+  subHeaders += '<th style="min-width:30px;border-bottom:2px solid #252525;">FLT</th>';
+  subHeaders += '<th style="min-width:36px;border-bottom:2px solid #252525;">BW</th>';
 
   const attLabels = { sq1:'1', sq2:'2', sq3:'3', bp1:'1', bp2:'2', bp3:'3', dl1:'1', dl2:'2', dl3:'3' };
   let prevGroup = '';
@@ -2137,45 +2270,49 @@ function renderScoreboard(data) {
     prevGroup = group;
     subHeaders += '<th class="att' + (isGroupStart ? ' group-border-left' : '') + '" style="border-bottom:2px solid #252525;">' + attLabels[key] + '</th>';
   }
-  // Best columns per lift group
-  if (hasSq) subHeaders += '<th class="group-border-left" style="border-bottom:2px solid #252525;">BEST</th>';
-  if (hasBp) subHeaders += '<th class="group-border-left" style="border-bottom:2px solid #252525;">BEST</th>';
-  if (hasDl) subHeaders += '<th class="group-border-left" style="border-bottom:2px solid #252525;">BEST</th>';
-  if (hasSq && hasBp) subHeaders += '<th class="group-border-left" style="border-bottom:2px solid #252525;">SUB</th>';
+  if (hasSubTotal) subHeaders += '<th class="group-border-left" style="border-bottom:2px solid #252525;">SUB</th>';
   subHeaders += '<th class="group-border-left" style="border-bottom:2px solid #252525;">TOTAL</th>';
   subHeaders += '<th style="border-bottom:2px solid #252525;">DOTS</th>';
 
   // Body rows
   let lastWc = null;
-  const totalColCount = 4 + attemptCols.length + (hasSq?1:0) + (hasBp?1:0) + (hasDl?1:0) + (hasSq&&hasBp?1:0) + 2;
+  const showWcSep = currentSort === 'wc';
+  const totalColCount = 4 + attemptCols.length + (hasSubTotal ? 1 : 0) + 2;
+
   const rows = lifters.map(l => {
     let sep = '';
-    if (l.weightClass !== lastWc) {
+    if (showWcSep && l.weightClass !== lastWc) {
       lastWc = l.weightClass;
       const wcLabel = l.weightClass ? (typeof l.weightClass === 'number' ? l.weightClass + ' kg' : l.weightClass) : 'Unknown';
       sep = '<tr class="wc-separator"><td colspan="' + totalColCount + '">' + wcLabel + '</td></tr>';
     }
 
-    const rowClass = l.isCurrent ? 'current-lifter' : '';
-    let row = '<tr class="' + rowClass + '" data-name="' + esc(l.name.toLowerCase()) + '" data-wc="' + (l.weightClass || '') + '" data-session="' + (l.session || '') + '" data-flight="' + (l.flight || '') + '">';
+    const bombed = isBombedOut(l);
+    const rowClass = (l.isCurrent ? 'current-lifter ' : '') + (bombed ? 'bombed-out ' : '');
+    let row = '<tr class="' + rowClass.trim() + '" data-id="' + esc(l.id || '') + '" data-name="' + esc(l.name.toLowerCase()) + '">';
 
     // Name
     row += '<td class="col-name"><a href="' + opLink(l.name) + '" target="_blank">' + esc(l.name) + '</a>';
-    if (l.team) row += ' <span style="color:#555;font-size:0.65rem;">' + esc(l.team) + '</span>';
+    if (l.team) row += ' <span style="color:#555;font-size:0.62rem;">' + esc(l.team) + '</span>';
     row += '</td>';
 
     // Place
     const placeClass = l.place === 1 ? 'place-1' : l.place === 2 ? 'place-2' : l.place === 3 ? 'place-3' : '';
     row += '<td class="place-cell ' + placeClass + '">' + (l.place || '&mdash;') + '</td>';
 
-    // Flight
-    row += '<td style="color:#666;font-size:0.75rem;">' + (l.flight || '') + (l.session ? '<span class="flight-badge">S' + l.session + '</span>' : '') + '</td>';
+    // Flight + Session
+    row += '<td style="color:#666;font-size:0.72rem;">' + (l.flight || '') + (l.session ? '<span class="flight-badge">S' + l.session + '</span>' : '') + '</td>';
 
     // Body weight
-    row += '<td style="color:#777;font-size:0.78rem;">' + (l.bodyWeight || '&mdash;') + '</td>';
+    row += '<td style="color:#777;font-size:0.75rem;">' + (l.bodyWeight || '&mdash;') + '</td>';
 
-    // Attempt cells
+    // Attempt cells — with best-lift color coding
     const atts = l.attempts || {};
+    const bestSqKey = bestAttemptKey(atts, 'sq');
+    const bestBpKey = bestAttemptKey(atts, 'bp');
+    const bestDlKey = bestAttemptKey(atts, 'dl');
+    const bestKeys = new Set([bestSqKey, bestBpKey, bestDlKey].filter(Boolean));
+
     let prevGrp = '';
     for (const key of attemptCols) {
       const grp = key.slice(0, 2);
@@ -2185,15 +2322,18 @@ function renderScoreboard(data) {
       let cls = 'att';
       if (isGrpStart) cls += ' group-border-left';
       let content = '&mdash;';
+
       if (a && a.weight) {
-        if (a.result === 'good') {
-          cls += ' good';
+        if (l.currentAttemptKey === key) {
+          cls += ' current-att';
+          content = String(a.weight);
+        } else if (a.result === 'good') {
+          cls += bestKeys.has(key) ? ' good-best' : ' good';
           content = String(a.weight);
         } else if (a.result === 'bad') {
           cls += ' miss';
           content = String(a.weight);
         } else {
-          // Pending attempt (weight set but not yet lifted)
           cls += ' open';
           content = String(a.weight);
         }
@@ -2203,19 +2343,14 @@ function renderScoreboard(data) {
       row += '<td class="' + cls + '">' + content + '</td>';
     }
 
-    // Best columns
-    if (hasSq) row += '<td class="best-cell group-border-left">' + (l.bestSq || '&mdash;') + '</td>';
-    if (hasBp) row += '<td class="best-cell group-border-left">' + (l.bestBp || '&mdash;') + '</td>';
-    if (hasDl) row += '<td class="best-cell group-border-left">' + (l.bestDl || '&mdash;') + '</td>';
-
-    // Subtotal (SQ + BP)
-    if (hasSq && hasBp) row += '<td class="subtotal-cell group-border-left">' + (l.subTotal || '&mdash;') + '</td>';
+    // Subtotal
+    if (hasSubTotal) row += '<td class="subtotal-cell group-border-left">' + (l.subTotal || '&mdash;') + '</td>';
 
     // Total
     row += '<td class="total-cell group-border-left">' + (l.total || '&mdash;') + '</td>';
 
     // DOTS
-    row += '<td class="dots-cell">' + (l.dots ? l.dots.toFixed(2) : '&mdash;') + '</td>';
+    row += '<td class="dots-cell">' + (l.dots ? l.dots.toFixed(1) : '&mdash;') + '</td>';
 
     row += '</tr>';
     return sep + row;
@@ -2225,33 +2360,49 @@ function renderScoreboard(data) {
     '<tr>' + groupHeaderRow + '</tr>' +
     '<tr>' + subHeaders + '</tr>' +
     '</thead><tbody>' + rows + '</tbody></table></div>';
+
+  // Auto-scroll to current lifter
+  if (autoScroll) scrollToCurrentLifter();
+}
+
+function scrollToCurrentLifter() {
+  const row = document.querySelector('tr.current-lifter');
+  if (row) {
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
 }
 
 function renderYT(data) {
   const el = document.getElementById('yt-link-wrap');
   if (data.video && data.video.youtubeVideoId) {
-    el.innerHTML = '<p style="margin-bottom:1rem;"><a class="yt-link" href="https://youtu.be/' + esc(data.video.youtubeVideoId) + '" target="_blank">&#x25B6; Watch on YouTube</a></p>';
+    el.innerHTML = '<a class="yt-link" href="https://youtu.be/' + esc(data.video.youtubeVideoId) + '" target="_blank">&#x25B6; Watch on YouTube</a>';
   } else {
     el.innerHTML = '';
   }
 }
 
-// Filter event listeners
+// Filter & sort event listeners
 document.getElementById('search-input').addEventListener('input', function() {
   currentFilters.search = this.value.toLowerCase();
   if (lastData) renderScoreboard(lastData);
 });
-document.getElementById('session-filter').addEventListener('change', function() {
-  currentFilters.session = this.value;
+['platform-filter','session-filter','flight-filter','wc-filter'].forEach(id => {
+  document.getElementById(id).addEventListener('change', function() {
+    const key = id.replace('-filter','');
+    currentFilters[key] = this.value;
+    if (lastData) renderScoreboard(lastData);
+  });
+});
+document.getElementById('sort-by').addEventListener('change', function() {
+  currentSort = this.value;
   if (lastData) renderScoreboard(lastData);
 });
-document.getElementById('flight-filter').addEventListener('change', function() {
-  currentFilters.flight = this.value;
-  if (lastData) renderScoreboard(lastData);
-});
-document.getElementById('wc-filter').addEventListener('change', function() {
-  currentFilters.wc = this.value;
-  if (lastData) renderScoreboard(lastData);
+document.getElementById('scroll-btn').addEventListener('click', function() {
+  autoScroll = !autoScroll;
+  this.textContent = autoScroll ? 'Auto-scroll ON' : 'Scroll to lifter';
+  this.style.background = autoScroll ? '#DC2626' : 'transparent';
+  this.style.color = autoScroll ? '#fff' : '#DC2626';
+  if (autoScroll) scrollToCurrentLifter();
 });
 
 async function poll() {
@@ -2262,6 +2413,7 @@ async function poll() {
     lastData = data;
     renderHero(data);
     renderQueue(data);
+    renderMeta(data);
     populateFilters(data);
     renderScoreboard(data);
     renderYT(data);
@@ -3104,11 +3256,16 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
         };
       }
 
-      // Determine current lifter IDs across all platforms
+      // Determine current lifter IDs and their current attempt keys across all platforms
       const currentLifterIds = new Set();
+      const currentAttemptKeys = {}; // lifterId -> "sq2", "dl1", etc.
       for (const [pid, platform] of Object.entries(st.platforms)) {
         const parsed = parseAttemptId(platform.currentAttemptId);
-        if (parsed) currentLifterIds.add(parsed.lifterId);
+        if (parsed) {
+          currentLifterIds.add(parsed.lifterId);
+          const prefix = parsed.liftName === 'squat' ? 'sq' : parsed.liftName === 'bench' ? 'bp' : 'dl';
+          currentAttemptKeys[parsed.lifterId] = prefix + parsed.attemptNumber;
+        }
       }
 
       const lifters = Object.values(st.lifters).filter(l => l.name).map(l => {
@@ -3136,6 +3293,8 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
           total: total || null,
           dots,
           isCurrent: currentLifterIds.has(l._id),
+          currentAttemptKey: currentAttemptKeys[l._id] || null,
+          platformId: l.platformId || null,
         };
       });
       lifters.sort((a, b) => {
