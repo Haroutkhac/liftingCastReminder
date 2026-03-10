@@ -2464,8 +2464,7 @@ function renderScoreboard(data) {
   if (hasSq) groups.push({ label: 'SQUAT', cols: 3 });
   if (hasBp) groups.push({ label: 'BENCH', cols: 3 });
   if (hasDl) groups.push({ label: 'DEADLIFT', cols: 3 });
-  const hasSubTotal = hasSq && hasBp;
-  const postCols = (hasSubTotal ? 1 : 0) + 1 + 1; // sub, total, dots
+  const postCols = 1 + 1 + 1; // proj, total, dots
   groups.push({ label: '', cols: postCols });
 
   const groupHeaderRow = groups.map(g =>
@@ -2488,15 +2487,15 @@ function renderScoreboard(data) {
     prevGroup = group;
     subHeaders += '<th class="att' + (isGroupStart ? ' group-border-left' : '') + '" style="border-bottom:2px solid #252525;">' + attLabels[key] + '</th>';
   }
-  if (hasSubTotal) subHeaders += '<th class="group-border-left" style="border-bottom:2px solid #252525;">SUB</th>';
-  subHeaders += '<th class="group-border-left" style="border-bottom:2px solid #252525;">TOTAL</th>';
+  subHeaders += '<th class="group-border-left" style="border-bottom:2px solid #252525;">PROJ</th>';
+  subHeaders += '<th style="border-bottom:2px solid #252525;">TOTAL</th>';
   subHeaders += '<th style="border-bottom:2px solid #252525;">DOTS</th>';
 
   // Body rows
   let lastWc = null;
   let lastGender = null;
   const showWcSep = currentSort === 'wc';
-  const totalColCount = 4 + attemptCols.length + (hasSubTotal ? 1 : 0) + 2;
+  const totalColCount = 4 + attemptCols.length + 3;
 
   const rows = lifters.map(l => {
     let sep = '';
@@ -2598,8 +2597,20 @@ function renderScoreboard(data) {
       row += '<td class="' + cls + '">' + content + '</td>';
     }
 
-    // Subtotal
-    if (hasSubTotal) row += '<td class="subtotal-cell group-border-left">' + (l.subTotal || '&mdash;') + '</td>';
+    // Projected total: best of each lift, using highest nominated weight for incomplete lifts
+    var projTotal = 0;
+    ['sq','bp','dl'].forEach(function(prefix) {
+      var best = 0;
+      var highestPending = 0;
+      for (var i = 1; i <= 3; i++) {
+        var a = atts[prefix + i];
+        if (!a || !a.weight) continue;
+        if (a.result === 'good' && a.weight > best) best = a.weight;
+        if (!a.result && a.weight > highestPending) highestPending = a.weight;
+      }
+      projTotal += best > 0 ? best : highestPending;
+    });
+    row += '<td class="subtotal-cell group-border-left">' + (projTotal > 0 ? projTotal : '&mdash;') + '</td>';
 
     // Total (with hypothetical delta)
     let totalHtml = l.total || '&mdash;';
@@ -2609,7 +2620,7 @@ function renderScoreboard(data) {
         totalHtml += '<span class="total-delta">' + (delta > 0 ? '+' : '') + delta + '</span>';
       }
     }
-    row += '<td class="total-cell group-border-left">' + totalHtml + '</td>';
+    row += '<td class="total-cell">' + totalHtml + '</td>';
 
     // DOTS
     row += '<td class="dots-cell">' + (l.dots ? l.dots.toFixed(1) : '&mdash;') + '</td>';
