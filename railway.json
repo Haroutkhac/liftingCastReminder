@@ -6,6 +6,7 @@
   "deploy": {
     "startCommand": "node scripts/liftingcast_client.js",
     "healthcheckPath": "/health",
+    "healthcheckTimeout": 30,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   }

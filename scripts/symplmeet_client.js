@@ -319,12 +319,19 @@ function stopAllSymPlmeet() {
 }
 
 // --- Discover all open meets ---
+// Erroneous duplicate meets on SymPlmeet (e.g. wrong day/session combos)
+const EXCLUDED_MEET_IDS = new Set(['1162']); // Day 3 S3 P1 is duplicate of Day 1 S3 P1 (1150)
+
 async function discoverTodaysSymPlmeetMeets() {
   try {
     const data = await symplmeetFetchJSON('/api/liveMeets');
     const meets = Array.isArray(data) ? data : [];
-    console.log(`[SYMPLMEET] Discovered ${meets.length} open meets`);
-    return meets.map(m => ({
+    const filtered = meets.filter(m => !EXCLUDED_MEET_IDS.has(String(m.id || m.meetId)));
+    if (filtered.length < meets.length) {
+      console.log(`[SYMPLMEET] Excluded ${meets.length - filtered.length} erroneous meet(s)`);
+    }
+    console.log(`[SYMPLMEET] Discovered ${filtered.length} open meets`);
+    return filtered.map(m => ({
       id: String(m.id || m.meetId),
       name: m.meetName || m.name || m.title || `SymPlmeet #${m.id || m.meetId}`,
     }));
