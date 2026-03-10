@@ -661,10 +661,13 @@ function isMeetReady(meetId) {
   if (getMeetPlatform(meetId) === 'symplmeet') return true; // always ready
   const st = meets[meetId];
   if (!st || !st.meet) return true; // if we can't tell, assume ready
-  // If any platform has a current attempt or any attempts have results, meet is active
-  const hasActivity = Object.values(st.platforms).some(p => p.currentAttemptId) ||
-    Object.values(st.attempts).some(a => a.result === 'good' || a.result === 'bad');
-  if (hasActivity) return true;
+  // If any platform has a current attempt pointing to a pending lift, meet is active
+  const hasLiveActivity = Object.values(st.platforms).some(p => {
+    if (!p.currentAttemptId) return false;
+    const att = st.attempts[p.currentAttemptId];
+    return !att || !att.result; // pending if no result yet
+  });
+  if (hasLiveActivity) return true;
   const meetDate = parseMeetDate(st.meet);
   if (!meetDate) return true; // no date info, assume ready
   const today = new Date();
@@ -3454,10 +3457,12 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
         const meetDoc = st.meet || {};
         // Get current lifter from first platform (for status line on card)
         let currentLift = null;
+        let hasLivePlatform = false;
         for (const [pid, platform] of Object.entries(st.platforms)) {
           const cached = st.platformSummaryCache?.[pid];
           if (cached?.currentLifter) {
             currentLift = { lifter: cached.currentLifter, liftName: cached.liftName, attemptNumber: cached.attemptNumber };
+            hasLivePlatform = true;
             break;
           }
           const parsed = parseAttemptId(platform.currentAttemptId);
@@ -3465,13 +3470,17 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
             const cl = st.lifters[parsed.lifterId];
             if (cl) {
               currentLift = { lifter: cl.name || 'Unknown', liftName: parsed.liftName, attemptNumber: parsed.attemptNumber };
+              // Live if the current attempt is still pending (no result yet)
+              const currentAttempt = st.attempts[platform.currentAttemptId];
+              if (!currentAttempt || !currentAttempt.result) {
+                hasLivePlatform = true;
+              }
               break;
             }
           }
         }
-        // Determine if meet is live: platform has a current lifter OR attempts have results
-        const hasResults = Object.values(st.attempts).some(a => a.result === 'good' || a.result === 'bad');
-        const isLive = currentLift !== null || hasResults;
+        // A meet is live if any platform's current attempt is still pending
+        const isLive = hasLivePlatform;
         // Collect lifter names for search filtering
         const lifterNames = Object.values(st.lifters).map(l => l.name).filter(Boolean);
         meetList.push({
