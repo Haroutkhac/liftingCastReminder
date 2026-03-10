@@ -2124,11 +2124,8 @@ ${FONT_LINKS}
     <a href="/" style="display:inline-block;padding:0.6rem 1.5rem;background:#DC2626;color:white;border-radius:8px;font-family:'Bebas Neue',sans-serif;font-size:1rem;letter-spacing:0.1em;transition:background 0.2s;">SUBSCRIBE TO A LIFTER</a>
   </div>
   <div style="text-align:center;margin-top:0.75rem;font-size:0.68rem;color:#333;">
-    <kbd style="background:#1A1A1A;padding:0.1rem 0.35rem;border-radius:3px;border:1px solid #333;color:#666;">F</kbd> follow &nbsp;
-    <kbd style="background:#1A1A1A;padding:0.1rem 0.35rem;border-radius:3px;border:1px solid #333;color:#666;">G</kbd> go to lifter &nbsp;
     <kbd style="background:#1A1A1A;padding:0.1rem 0.35rem;border-radius:3px;border:1px solid #333;color:#666;">H</kbd> what-if &nbsp;
-    <kbd style="background:#1A1A1A;padding:0.1rem 0.35rem;border-radius:3px;border:1px solid #333;color:#666;">/</kbd> search &nbsp;
-    <kbd style="background:#1A1A1A;padding:0.1rem 0.35rem;border-radius:3px;border:1px solid #333;color:#666;">1-4</kbd> sort
+    <kbd style="background:#1A1A1A;padding:0.1rem 0.35rem;border-radius:3px;border:1px solid #333;color:#666;">/</kbd> search
   </div>
 </div>
 <script>
