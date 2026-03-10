@@ -115,6 +115,7 @@ function getMeetState(meetId) {
       divisions: {},
       attempts: {},
       lastSeq: '0',
+      lastChangeTime: 0,
       trackState: {},
     };
   }
@@ -620,6 +621,7 @@ async function watchChanges(meetId) {
       const changes = await fetchJSON(url, { timeout: 90000 });
 
       if (changes.results && changes.results.length > 0) {
+        st.lastChangeTime = Date.now();
         let needsCheck = false;
         for (const change of changes.results) {
           if (change.doc) {
@@ -803,7 +805,9 @@ async function startSymPlmeetMeet(meetId) {
       checkPlatforms(meetId);
       watchingMeets.add(meetId);
       watchSymPlmeet(meetId, (data) => {
-        normalizeSymPlmeetData(meetId, data, getMeetState(meetId));
+        const symSt = getMeetState(meetId);
+        symSt.lastChangeTime = Date.now();
+        normalizeSymPlmeetData(meetId, data, symSt);
         checkPlatforms(meetId);
       });
     }
@@ -3479,8 +3483,9 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
             }
           }
         }
-        // A meet is live if any platform's current attempt is still pending
-        const isLive = hasLivePlatform;
+        // A meet is live if: pending current attempt AND received changes recently (30min)
+        const recentActivity = st.lastChangeTime > 0 && (Date.now() - st.lastChangeTime) < 30 * 60 * 1000;
+        const isLive = hasLivePlatform && recentActivity;
         // Collect lifter names for search filtering
         const lifterNames = Object.values(st.lifters).map(l => l.name).filter(Boolean);
         meetList.push({
