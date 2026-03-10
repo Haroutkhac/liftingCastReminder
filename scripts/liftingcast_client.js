@@ -2605,7 +2605,7 @@ function renderScoreboard(data) {
         if (a.result === 'good' && a.weight > best) best = a.weight;
         if (!a.result && a.weight > highestPending) highestPending = a.weight;
       }
-      projTotal += best > 0 ? best : highestPending;
+      projTotal += Math.max(best, highestPending);
     });
     row += '<td class="subtotal-cell group-border-left">' + (projTotal > 0 ? projTotal : '&mdash;') + '</td>';
 
