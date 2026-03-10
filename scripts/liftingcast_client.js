@@ -1977,6 +1977,39 @@ ${FONT_LINKS}
   .sb tbody tr.bombed-out td { opacity: 0.45; }
   .sb tbody tr.bombed-out td.col-name { opacity: 0.65; }
 
+  /* Hypothetical mode */
+  .hypo-btn { padding: 0.4rem 0.65rem; border-radius: 8px; border: 1px solid #A78BFA; background: transparent; color: #A78BFA; font-size: 0.75rem; font-family: 'Outfit', sans-serif; cursor: pointer; font-weight: 600; transition: all 0.2s; white-space: nowrap; }
+  .hypo-btn:hover { background: #A78BFA; color: #fff; }
+  .hypo-btn.active { background: #A78BFA; color: #fff; box-shadow: 0 0 12px rgba(167,139,250,0.3); }
+  .hypo-reset { padding: 0.4rem 0.65rem; border-radius: 8px; border: 1px solid #555; background: transparent; color: #888; font-size: 0.72rem; font-family: 'Outfit', sans-serif; cursor: pointer; transition: all 0.2s; white-space: nowrap; }
+  .hypo-reset:hover { border-color: #EF4444; color: #EF4444; }
+  .hypo-banner { background: rgba(167,139,250,0.08); border: 1px solid rgba(167,139,250,0.2); border-radius: 8px; padding: 0.5rem 0.75rem; margin-bottom: 0.75rem; font-size: 0.78rem; color: #A78BFA; display: none; }
+  .hypo-banner.visible { display: block; }
+
+  /* Hypothetical cell styling */
+  .att.hypo-good { color: #A78BFA; font-weight: 700; background: rgba(167,139,250,0.1); border: 1px dashed rgba(167,139,250,0.4); }
+  .att.hypo-miss { color: #A78BFA; text-decoration: line-through; opacity: 0.6; background: rgba(167,139,250,0.05); border: 1px dashed rgba(167,139,250,0.3); }
+  .att.hypo-open { color: #A78BFA; font-style: italic; background: rgba(167,139,250,0.05); border: 1px dashed rgba(167,139,250,0.2); }
+  .att.editable { cursor: pointer; position: relative; }
+  .att.editable:hover { background: rgba(167,139,250,0.15) !important; }
+
+  /* Placement change indicators */
+  .place-up { color: #4ADE80; font-size: 0.6rem; margin-left: 0.2rem; }
+  .place-down { color: #EF4444; font-size: 0.6rem; margin-left: 0.2rem; }
+  .total-delta { font-size: 0.65rem; color: #A78BFA; margin-left: 0.3rem; }
+
+  /* Inline attempt editor popup */
+  .att-editor { position: fixed; z-index: 100; background: #1A1A1A; border: 1px solid #333; border-radius: 10px; padding: 0.75rem; box-shadow: 0 8px 24px rgba(0,0,0,0.6); min-width: 180px; }
+  .att-editor-title { font-size: 0.68rem; color: #666; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.5rem; }
+  .att-editor input[type="number"] { width: 100%; padding: 0.4rem 0.5rem; border: 1px solid #333; border-radius: 6px; background: #0D0D0D; color: #F0F0F0; font-size: 0.9rem; font-family: 'Outfit', sans-serif; margin-bottom: 0.5rem; }
+  .att-editor input[type="number"]:focus { outline: none; border-color: #A78BFA; }
+  .att-editor-btns { display: flex; gap: 0.35rem; }
+  .att-editor-btns button { flex: 1; padding: 0.35rem; border: none; border-radius: 6px; cursor: pointer; font-size: 0.75rem; font-weight: 600; font-family: 'Outfit', sans-serif; transition: opacity 0.2s; }
+  .att-editor-btns button:hover { opacity: 0.85; }
+  .att-editor-btns .btn-good { background: #4ADE80; color: #0A0A0A; }
+  .att-editor-btns .btn-bad { background: #EF4444; color: #fff; }
+  .att-editor-btns .btn-clear { background: #333; color: #AAA; }
+
   @media (max-width: 700px) {
     .sb tbody td { font-size: 0.72rem; padding: 0.3rem 0.15rem; }
     .sb thead th { font-size: 0.55rem; padding: 0.25rem 0.15rem; }
@@ -2013,8 +2046,11 @@ ${FONT_LINKS}
         <option value="name">Sort: Name</option>
       </select>
       <button id="scroll-btn" class="scroll-btn" style="display:none;">Scroll to lifter</button>
+      <button id="hypo-btn" class="hypo-btn">What If?</button>
+      <button id="hypo-reset" class="hypo-reset" style="display:none;">Reset</button>
     </div>
   </div>
+  <div id="hypo-banner" class="hypo-banner">WHAT-IF MODE: Click any empty or pending attempt cell to set a hypothetical weight and result. Projected totals and placements will update live.</div>
   <div id="scoresheet"></div>
   <div id="updated" class="updated-ago"></div>
   <div style="text-align:center;margin-top:1.5rem;">
@@ -2023,6 +2059,7 @@ ${FONT_LINKS}
   <div style="text-align:center;margin-top:0.75rem;font-size:0.68rem;color:#333;">
     <kbd style="background:#1A1A1A;padding:0.1rem 0.35rem;border-radius:3px;border:1px solid #333;color:#666;">F</kbd> follow &nbsp;
     <kbd style="background:#1A1A1A;padding:0.1rem 0.35rem;border-radius:3px;border:1px solid #333;color:#666;">G</kbd> go to lifter &nbsp;
+    <kbd style="background:#1A1A1A;padding:0.1rem 0.35rem;border-radius:3px;border:1px solid #333;color:#666;">H</kbd> what-if &nbsp;
     <kbd style="background:#1A1A1A;padding:0.1rem 0.35rem;border-radius:3px;border:1px solid #333;color:#666;">/</kbd> search &nbsp;
     <kbd style="background:#1A1A1A;padding:0.1rem 0.35rem;border-radius:3px;border:1px solid #333;color:#666;">1-4</kbd> sort
   </div>
@@ -2034,6 +2071,85 @@ let lastData = null;
 let currentFilters = { search: '', session: '', flight: '', wc: '', platform: '' };
 let currentSort = 'wc';
 let autoScroll = false;
+
+// Hypothetical mode state
+let hypotheticalMode = false;
+const hypotheticals = {}; // key: "lifterId:attKey" -> { weight, result }
+
+function hypoKey(lifterId, attKey) { return lifterId + ':' + attKey; }
+
+// DOTS calculation (client-side mirror of server)
+function computeDOTSClient(bw, total, gender) {
+  if (!bw || bw <= 0 || !total || total <= 0) return null;
+  const isFemale = gender && /^f/i.test(gender);
+  const coeff = isFemale
+    ? [-57.96288, 13.6175032, -0.1126655495, 0.0005158568, -0.0000010706]
+    : [-307.75076, 24.0900756, -0.1918759221, 0.0007391293, -0.0000010930];
+  const bwC = Math.min(Math.max(bw, 40), 210);
+  const denom = coeff[0] + coeff[1]*bwC + coeff[2]*bwC**2 + coeff[3]*bwC**3 + coeff[4]*bwC**4;
+  if (denom <= 0) return null;
+  return Math.round((500 / denom) * total * 100) / 100;
+}
+
+// Apply hypothetical overrides to lifter data and recompute totals/placements
+function applyHypotheticals(lifters) {
+  if (Object.keys(hypotheticals).length === 0) return lifters;
+
+  // Deep clone lifters with hypothetical overrides applied
+  const cloned = lifters.map(l => {
+    const c = JSON.parse(JSON.stringify(l));
+    const atts = c.attempts || {};
+    let changed = false;
+
+    for (const attKey of ['sq1','sq2','sq3','bp1','bp2','bp3','dl1','dl2','dl3']) {
+      const hk = hypoKey(l.id, attKey);
+      if (hypotheticals[hk]) {
+        atts[attKey] = { ...hypotheticals[hk], _hypo: true };
+        changed = true;
+      }
+    }
+    c.attempts = atts;
+
+    if (changed) {
+      // Recompute bests from merged attempts
+      const bestOf = (prefix) => {
+        let best = 0;
+        for (let i = 1; i <= 3; i++) {
+          const a = atts[prefix + i];
+          if (a && a.result === 'good' && a.weight > best) best = a.weight;
+        }
+        return best;
+      };
+      const bestSq = bestOf('sq');
+      const bestBp = bestOf('bp');
+      const bestDl = bestOf('dl');
+      c.bestSq = bestSq || null;
+      c.bestBp = bestBp || null;
+      c.bestDl = bestDl || null;
+      c.subTotal = (bestSq + bestBp) || null;
+      c._origTotal = l.total;
+      c._origPlace = l.place;
+      c.total = (bestSq + bestBp + bestDl) || null;
+      c.dots = (c.total > 0 && c.bodyWeight > 0) ? computeDOTSClient(c.bodyWeight, c.total, c.gender) : null;
+      c._hypoChanged = true;
+    }
+    return c;
+  });
+
+  // Recompute placements within weight class
+  const byWc = {};
+  for (const l of cloned) {
+    const wcKey = (l.gender || '') + ':' + (l.weightClass || '');
+    if (!byWc[wcKey]) byWc[wcKey] = [];
+    byWc[wcKey].push(l);
+  }
+  for (const group of Object.values(byWc)) {
+    const ranked = group.filter(l => l.total > 0).sort((a, b) => b.total - a.total);
+    ranked.forEach((l, i) => { l.place = i + 1; });
+  }
+
+  return cloned;
+}
 
 function opLink(name) {
   const slug = name.toLowerCase().replace(/[^a-z]/g, '');
@@ -2254,6 +2370,11 @@ function renderScoreboard(data) {
     });
   }
 
+  // Apply hypothetical overrides if in what-if mode
+  if (hypotheticalMode && Object.keys(hypotheticals).length > 0) {
+    lifters = applyHypotheticals(lifters);
+  }
+
   // Sort
   lifters = sortLifters(lifters, currentSort);
 
@@ -2335,9 +2456,15 @@ function renderScoreboard(data) {
     if (l.division) row += '<br><span style="color:#666;font-size:0.58rem;font-weight:400;">' + esc(l.division) + '</span>';
     row += '</td>';
 
-    // Place
+    // Place (with hypothetical change indicator)
     const placeClass = l.place === 1 ? 'place-1' : l.place === 2 ? 'place-2' : l.place === 3 ? 'place-3' : '';
-    row += '<td class="place-cell ' + placeClass + '">' + (l.place || '&mdash;') + '</td>';
+    let placeHtml = l.place || '&mdash;';
+    if (l._hypoChanged && l._origPlace && l.place && l._origPlace !== l.place) {
+      const diff = l._origPlace - l.place; // positive = moved up
+      if (diff > 0) placeHtml += '<span class="place-up">&uarr;' + diff + '</span>';
+      else placeHtml += '<span class="place-down">&darr;' + Math.abs(diff) + '</span>';
+    }
+    row += '<td class="place-cell ' + placeClass + '">' + placeHtml + '</td>';
 
     // Flight + Session
     row += '<td style="color:#666;font-size:0.72rem;">' + (l.flight || '') + (l.session ? '<span class="flight-badge">S' + l.session + '</span>' : '') + '</td>';
@@ -2362,8 +2489,16 @@ function renderScoreboard(data) {
       if (isGrpStart) cls += ' group-border-left';
       let content = '&mdash;';
 
+      const isHypo = a && a._hypo;
+
       if (a && a.weight) {
-        if (l.currentAttemptKey === key) {
+        if (isHypo) {
+          // Hypothetical attempt styling
+          if (a.result === 'good') { cls += ' hypo-good'; }
+          else if (a.result === 'bad') { cls += ' hypo-miss'; }
+          else { cls += ' hypo-open'; }
+          content = String(a.weight);
+        } else if (l.currentAttemptKey === key) {
           cls += ' current-att';
           content = String(a.weight);
         } else if (a.result === 'good') {
@@ -2379,14 +2514,31 @@ function renderScoreboard(data) {
       } else {
         cls += ' empty';
       }
+
+      // In hypothetical mode, make non-completed cells clickable
+      if (hypotheticalMode) {
+        const isCompleted = a && a.weight && a.result && !isHypo;
+        if (!isCompleted) {
+          cls += ' editable';
+          row += '<td class="' + cls + '" data-lifter-id="' + esc(l.id) + '" data-att-key="' + key + '" data-current-weight="' + (a && a.weight ? a.weight : '') + '">' + content + '</td>';
+          continue;
+        }
+      }
       row += '<td class="' + cls + '">' + content + '</td>';
     }
 
     // Subtotal
     if (hasSubTotal) row += '<td class="subtotal-cell group-border-left">' + (l.subTotal || '&mdash;') + '</td>';
 
-    // Total
-    row += '<td class="total-cell group-border-left">' + (l.total || '&mdash;') + '</td>';
+    // Total (with hypothetical delta)
+    let totalHtml = l.total || '&mdash;';
+    if (l._hypoChanged && l.total && l._origTotal !== undefined) {
+      const delta = l.total - (l._origTotal || 0);
+      if (delta !== 0) {
+        totalHtml += '<span class="total-delta">' + (delta > 0 ? '+' : '') + delta + '</span>';
+      }
+    }
+    row += '<td class="total-cell group-border-left">' + totalHtml + '</td>';
 
     // DOTS
     row += '<td class="dots-cell">' + (l.dots ? l.dots.toFixed(1) : '&mdash;') + '</td>';
@@ -2444,6 +2596,98 @@ document.getElementById('scroll-btn').addEventListener('click', function() {
   if (autoScroll) scrollToCurrentLifter();
 });
 
+// Hypothetical mode toggle
+document.getElementById('hypo-btn').addEventListener('click', function() {
+  hypotheticalMode = !hypotheticalMode;
+  this.classList.toggle('active', hypotheticalMode);
+  this.textContent = hypotheticalMode ? 'What If: ON' : 'What If?';
+  document.getElementById('hypo-banner').classList.toggle('visible', hypotheticalMode);
+  document.getElementById('hypo-reset').style.display = hypotheticalMode ? '' : 'none';
+  if (lastData) renderScoreboard(lastData);
+});
+
+document.getElementById('hypo-reset').addEventListener('click', function() {
+  for (const k in hypotheticals) delete hypotheticals[k];
+  if (lastData) renderScoreboard(lastData);
+});
+
+// Inline attempt editor for hypothetical mode
+let activeEditor = null;
+function closeEditor() {
+  if (activeEditor) { activeEditor.remove(); activeEditor = null; }
+}
+
+document.addEventListener('click', function(e) {
+  // Close editor if clicking outside
+  if (activeEditor && !activeEditor.contains(e.target) && !e.target.classList.contains('editable')) {
+    closeEditor();
+  }
+
+  // Handle editable cell click
+  if (!e.target.classList.contains('editable')) return;
+  closeEditor();
+
+  const cell = e.target;
+  const lifterId = cell.dataset.lifterId;
+  const attKey = cell.dataset.attKey;
+  const currentWeight = cell.dataset.currentWeight;
+
+  // Position editor near the cell
+  const rect = cell.getBoundingClientRect();
+  const editor = document.createElement('div');
+  editor.className = 'att-editor';
+  editor.style.left = Math.min(rect.left, window.innerWidth - 200) + 'px';
+  editor.style.top = (rect.bottom + 4) + 'px';
+
+  const liftLabel = attKey.slice(0,2).toUpperCase() + ' Attempt ' + attKey.slice(2);
+  editor.innerHTML =
+    '<div class="att-editor-title">' + liftLabel + '</div>' +
+    '<input type="number" id="hypo-weight" placeholder="Weight (kg)" value="' + (currentWeight || '') + '" min="0" step="2.5">' +
+    '<div class="att-editor-btns">' +
+    '  <button class="btn-good" data-result="good">GOOD</button>' +
+    '  <button class="btn-bad" data-result="bad">MISS</button>' +
+    '  <button class="btn-clear" data-result="clear">CLEAR</button>' +
+    '</div>';
+
+  document.body.appendChild(editor);
+  activeEditor = editor;
+
+  // Focus weight input
+  const weightInput = editor.querySelector('#hypo-weight');
+  weightInput.focus();
+  weightInput.select();
+
+  // Handle button clicks
+  editor.querySelectorAll('.att-editor-btns button').forEach(btn => {
+    btn.addEventListener('click', function() {
+      const result = this.dataset.result;
+      const weight = parseFloat(weightInput.value);
+
+      if (result === 'clear') {
+        delete hypotheticals[hypoKey(lifterId, attKey)];
+      } else if (weight > 0) {
+        hypotheticals[hypoKey(lifterId, attKey)] = { weight: weight, result: result };
+      }
+      closeEditor();
+      if (lastData) renderScoreboard(lastData);
+    });
+  });
+
+  // Enter key = good lift
+  weightInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+      const weight = parseFloat(this.value);
+      if (weight > 0) {
+        hypotheticals[hypoKey(lifterId, attKey)] = { weight: weight, result: 'good' };
+        closeEditor();
+        if (lastData) renderScoreboard(lastData);
+      }
+    } else if (e.key === 'Escape') {
+      closeEditor();
+    }
+  });
+});
+
 async function poll() {
   try {
     const res = await fetch('/api/meet/' + MEET_ID + '/live');
@@ -2473,6 +2717,11 @@ document.addEventListener('keydown', function(e) {
     case 'F':
       // Toggle auto-scroll / follow
       document.getElementById('scroll-btn').click();
+      break;
+    case 'h':
+    case 'H':
+      // Toggle hypothetical / what-if mode
+      document.getElementById('hypo-btn').click();
       break;
     case 'g':
     case 'G':
