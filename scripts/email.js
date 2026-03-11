@@ -47,7 +47,7 @@ setInterval(cleanupSentCache, 5 * 60 * 1000).unref();
 
 function youtubeSearchUrl(meetName) {
   if (!meetName) return null;
-  return `https://www.youtube.com/results?search_query=${encodeURIComponent(meetName)}&sp=EgJAAQ%3D%3D`;
+  return `https://youtube.com/results?search_query=${encodeURIComponent(meetName)}&sp=EgJAAQ%3D%3D`;
 }
 
 async function sendOnDeckEmail(toEmail, lifterName, meetName, liftName, position, meetId, subLifterName, details, meetDate) {
@@ -110,6 +110,7 @@ async function sendOnDeckEmail(toEmail, lifterName, meetName, liftName, position
           ${weightLine ? `<tr><td style="padding:4px 12px 4px 0;color:#888;">Weight</td><td style="padding:4px 0;">${weightLine}</td></tr>` : ''}
           ${placeLine ? `<tr><td style="padding:4px 12px 4px 0;color:#888;">Standings</td><td style="padding:4px 0;">${placeLine}</td></tr>` : ''}
         </table>
+        <p style="margin:12px 0;"><a href="${baseUrl}/meet/${meetId}/scoreboard" style="color:#DC2626;font-weight:600;">View Live Scoreboard</a></p>
         ${youtubeSearchUrl(meetName) ? `<p style="margin:12px 0;"><a href="${youtubeSearchUrl(meetName)}" style="color:#3b82f6;font-weight:600;">Watch Live on YouTube</a></p>` : ''}
         <hr>
         <p style="font-size:12px;color:#888;">
@@ -161,6 +162,7 @@ async function sendSubscriptionConfirmation(toEmail, lifterName, meetName, meetD
         </table>
         <p style="font-size:13px;color:#888;">No action needed — we'll email you automatically when it's almost time for ${lifterName} to lift.</p>
         <p style="font-size:13px;color:#888;">You'll also be automatically subscribed when this lifter competes in future meets.</p>
+        <p style="margin:12px 0;"><a href="${baseUrl}/meet/${meetId}/scoreboard" style="color:#DC2626;font-weight:600;">View Live Scoreboard</a></p>
         ${youtubeSearchUrl(meetName) ? `<p style="margin:12px 0;"><a href="${youtubeSearchUrl(meetName)}" style="color:#3b82f6;font-weight:600;">Watch Live on YouTube</a></p>` : ''}
         <p style="font-size:13px;color:#e6a817;background:#2a2a1a;padding:8px 12px;border-radius:6px;margin:12px 0;"><strong>Important:</strong> Check your spam/junk folder and mark this email as "Not Spam" so you don't miss alerts!</p>
         <hr>
@@ -202,6 +204,7 @@ async function sendAutoSubscribeNotification(toEmail, lifterName, meetName, meet
         <p>Heads up! <strong>${lifterName}</strong> is competing at <strong>${meetName}</strong>${meetDate ? ` on <strong>${meetDate}</strong>` : ''}.</p>
         <p>Since you follow them, you've been auto-subscribed to alerts for this meet.</p>
         <p style="font-size:13px;color:#888;">You'll receive notifications when ${lifterName} is almost up (2 lifters away).</p>
+        <p style="margin:12px 0;"><a href="${baseUrl}/meet/${meetId}/scoreboard" style="color:#DC2626;font-weight:600;">View Live Scoreboard</a></p>
         ${youtubeSearchUrl(meetName) ? `<p style="margin:12px 0;"><a href="${youtubeSearchUrl(meetName)}" style="color:#3b82f6;font-weight:600;">Watch Live on YouTube</a></p>` : ''}
         <hr>
         <p style="font-size:12px;color:#888;">
@@ -249,7 +252,7 @@ async function sendRecapEmail(toEmail, lifterName, meetName, attempts, videoId, 
       html: `
         <h2>Meet Recap: ${lifterName}</h2>
         <p><strong>${meetName}</strong>${meetDate ? ` &mdash; ${meetDate}` : ''}</p>
-        ${videoId ? `<p><a href="https://www.youtube.com/watch?v=${videoId}" style="color:#3b82f6;font-weight:600;">Full VOD on YouTube</a></p>` : ''}
+        ${videoId ? `<p><a href="https://youtube.com/watch?v=${videoId}" style="color:#3b82f6;font-weight:600;">Full VOD on YouTube</a></p>` : ''}
         <table style="border-collapse:collapse;margin:16px 0;width:100%;">
           <thead>
             <tr style="text-align:left;">

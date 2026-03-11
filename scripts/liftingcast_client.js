@@ -360,7 +360,7 @@ async function sendMeetRecaps(meetId) {
           const m = Math.floor((offset % 3600) / 60);
           const s = Math.floor(offset % 60);
           timeFormatted = h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
-          youtubeLink = `https://www.youtube.com/watch?v=${videoId}&t=${offset}`;
+          youtubeLink = `https://youtube.com/watch?v=${videoId}&t=${offset}`;
         }
         return {
           lift_name: t.lift_name,
@@ -1061,6 +1061,9 @@ const SHARED_STYLES = `
   .brand { font-family: 'Bebas Neue', sans-serif; font-size: 2.25rem; letter-spacing: 0.06em; line-height: 1; }
   .brand-lift { color: #DC2626; }
   .brand-alert { color: #F0F0F0; }
+  .home-logo { display: block; margin-bottom: 1rem; }
+  .home-logo .brand { font-size: 1.1rem; color: #F0F0F0; transition: opacity 0.2s; }
+  .home-logo .brand:hover { opacity: 0.7; }
   .card { background: #141414; border: 1px solid #1F1F1F; border-radius: 14px; padding: 2.25rem; max-width: 440px; width: 92%; position: relative; overflow: hidden; }
   .card::before { content: ''; position: absolute; top: 0; left: 0; bottom: 0; width: 3px; background: #DC2626; }
   .subtitle { color: #777; font-size: 0.95rem; margin-top: 0.5rem; font-weight: 300; }
@@ -1375,7 +1378,7 @@ ${FONT_LINKS}
   .back-link:hover { color: #F0F0F0; }
 </style>
 </head><body><div class="card animate-in">
-  <span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span>
+  <div class="home-logo"><a href="/"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
   <div class="error-msg">${msg}</div>
   <a href="/" class="back-link">&larr; Go back</a>
 </div></body></html>`;
@@ -1414,7 +1417,7 @@ ${FONT_LINKS}
   .cta a:hover { color: #F0F0F0; }
 </style>
 </head><body><div class="card animate-in">
-  <div style="text-align:center;margin-bottom:1.25rem;"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></div>
+  <div class="home-logo" style="text-align:center;"><a href="/"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
   <div class="success-heading">SUBSCRIBED!</div>
   <p class="confirm-text">You'll get an email when <strong>${escHtml(lifter)}</strong> is almost up (2 lifters away) at <strong>${escHtml(meetName)}</strong>.<br><span style="font-size:0.85rem;color:#777;">You'll also be auto-subscribed when they compete in future meets.</span></p>
   <div class="spam-warning">Check your spam/junk folder and mark our emails as &ldquo;Not Spam&rdquo; to make sure you get alerts on time.</div>
@@ -1456,7 +1459,7 @@ ${FONT_LINKS}
   .cta a:hover { color: #F0F0F0; }
 </style>
 </head><body><div class="card animate-in">
-  <div style="text-align:center;margin-bottom:1.25rem;"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></div>
+  <div class="home-logo" style="text-align:center;"><a href="/"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
   <div class="success-heading">SUBSCRIBED!</div>
   <p class="confirm-text">You'll get alerts for ${namesList}: <span style="font-size:0.85rem;color:#999;">${escHtml(prefsList)}</span>.<br><span style="font-size:0.85rem;color:#777;">You'll also be auto-subscribed when they compete in future meets.</span></p>
   <div class="spam-warning">Check your spam/junk folder and mark our emails as &ldquo;Not Spam&rdquo; to make sure you get alerts on time.</div>
@@ -1486,9 +1489,7 @@ ${FONT_LINKS}
 </style>
 </head><body>
   <div class="card animate-in">
-    <div style="text-align:center;margin-bottom:0.5rem;">
-      <span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span>
-    </div>
+    <div class="home-logo" style="text-align:center;"><a href="/"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
     <div class="lifter-name">${escHtml(lifterName)}</div>
     <p class="follow-desc">Enter your email to get notified when <strong>${escHtml(lifterName)}</strong> is about to lift.</p>
     ${meetsInfo}
@@ -1549,7 +1550,7 @@ ${FONT_LINKS}
   .cta a:hover { color: #F0F0F0; }
 </style>
 </head><body><div class="card animate-in">
-  <div style="text-align:center;margin-bottom:1.25rem;"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></div>
+  <div class="home-logo" style="text-align:center;"><a href="/"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
   <div class="success-heading">FOLLOWING ${escHtml(lifterName).toUpperCase()}!</div>
   <p class="confirm-text">You'll get alerts whenever <strong>${escHtml(lifterName)}</strong> is about to lift.</p>
   ${meetsSection}
@@ -1571,7 +1572,7 @@ ${FONT_LINKS}
   .back-link:hover { color: #F0F0F0; }
 </style>
 </head><body><div class="card animate-in">
-  <span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span>
+  <div class="home-logo"><a href="/"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
   <p class="unsub-msg">${msg}</p>
   <a href="/" class="back-link">&larr; Back to LiftAlert</a>
 </div></body></html>`;
@@ -1693,7 +1694,7 @@ ${FONT_LINKS}
   .matched-lifters span { display: inline-block; background: #1A0A0A; border: 1px solid #3B1111; border-radius: 4px; padding: 0.1rem 0.4rem; margin: 0.15rem 0.2rem 0.15rem 0; font-size: 0.75rem; }
 </style>
 </head><body><div class="container animate-in">
-  <div class="nav"><a href="/">&larr; Back to <span class="brand" style="font-size:1rem;"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
+  <div class="home-logo"><a href="/"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
   <div class="page-heading">ALL MEETS</div>
   <p class="subtitle" style="margin-bottom:1.25rem;">${meetList.length} meet${meetList.length !== 1 ? 's' : ''} currently indexed</p>
   <input type="text" class="search-box" placeholder="Search lifters or meets..." oninput="searchMeets(this.value)">
@@ -1774,7 +1775,7 @@ function meetDetailHTML(meetId, meetState, subscribedLifterNames, videoData, tim
     }
     for (const [key, val] of Object.entries(bestByLifterLift)) {
       const offset = Math.max(0, val.wallEpoch - streamStart - TIMESTAMP_LEAD_SECONDS);
-      vodLinks[key] = `https://www.youtube.com/watch?v=${videoId}&t=${offset}`;
+      vodLinks[key] = `https://youtube.com/watch?v=${videoId}&t=${offset}`;
     }
   }
 
@@ -1981,7 +1982,7 @@ ${FONT_LINKS}
   }
 </style>
 </head><body><div class="container animate-in">
-  <div class="nav"><a href="/meets">&larr; All meets</a></div>
+  <div class="home-logo"><a href="/"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
   <div class="page-heading">${escHtml(meetName)}</div>
   ${meta ? `<p class="subtitle" style="margin-bottom:0.5rem;">${meta}</p>` : ''}
   <p style="font-size:0.85rem;color:#555;margin-bottom:1rem;">${lifters.length} lifter${lifters.length !== 1 ? 's' : ''} &middot; ${Object.keys(meetState.platforms).length} platform${Object.keys(meetState.platforms).length !== 1 ? 's' : ''}${watchingMeets.has(meetId) && meetState.lastChangeTime > 0 && (Date.now() - meetState.lastChangeTime) < 30 * 60 * 1000 ? ` &middot; <a href="/live/${escHtml(meetId)}" style="color:#22C55E;font-weight:600;">LIVE SCOREBOARD &rarr;</a>` : ''}</p>
@@ -2199,8 +2200,8 @@ ${FONT_LINKS}
   }
 </style>
 </head><body><div class="container animate-in">
-  <div class="nav">
-    <a href="/meets/${escHtml(meetId)}">&larr; Meet details</a>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem;">
+    <div class="home-logo" style="margin-bottom:0;"><a href="/"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
     <div id="yt-link-wrap"></div>
   </div>
   <div class="page-heading">${escHtml(meetName)} <span id="live-indicator" class="live-badge"><span class="pulse-dot"></span>LIVE</span></div>
@@ -2738,7 +2739,7 @@ function renderScoreboard(data) {
 function renderYT(data) {
   const el = document.getElementById('yt-link-wrap');
   if (data.video && data.video.youtubeVideoId) {
-    el.innerHTML = '<p style="margin-bottom:1rem;"><a class="yt-link" href="https://www.youtube.com/watch?v=' + esc(data.video.youtubeVideoId) + '" target="_blank">&#x25B6; Watch on YouTube</a></p>';
+    el.innerHTML = '<p style="margin-bottom:1rem;"><a class="yt-link" href="https://youtube.com/watch?v=' + esc(data.video.youtubeVideoId) + '" target="_blank">&#x25B6; Watch on YouTube</a></p>';
   } else {
     el.innerHTML = '';
   }
@@ -2925,7 +2926,7 @@ function recapHTML(meetId, meetName, videoId, streamStart, timestamps, meetDate)
     if (hasVod) {
       const offset = Math.max(0, wallEpoch - streamStart - TIMESTAMP_LEAD_SECONDS);
       timeStr = fmtOffset(offset);
-      link = `https://www.youtube.com/watch?v=${videoId}&t=${offset}`;
+      link = `https://youtube.com/watch?v=${videoId}&t=${offset}`;
     }
     byLifter[t.lifter_id].cells[key] = { weight: t.weight, link, timeStr };
     if (wallEpoch < byLifter[t.lifter_id].earliest) byLifter[t.lifter_id].earliest = wallEpoch;
@@ -2990,7 +2991,7 @@ function recapHTML(meetId, meetName, videoId, streamStart, timestamps, meetDate)
     </tr>`;
   }).join('');
 
-  const videoLink = videoId ? `<p style="margin-bottom:1.25rem;"><a href="https://www.youtube.com/watch?v=${escHtml(videoId)}" target="_blank" style="color:#3b82f6;font-weight:600;">Full VOD on YouTube &#x25B6;</a></p>` : '';
+  const videoLink = videoId ? `<p style="margin-bottom:1.25rem;"><a href="https://youtube.com/watch?v=${escHtml(videoId)}" target="_blank" style="color:#3b82f6;font-weight:600;">Full VOD on YouTube &#x25B6;</a></p>` : '';
 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Meet Recap - LiftAlert</title>
@@ -3034,7 +3035,7 @@ ${FONT_LINKS}
   }
 </style>
 </head><body><div class="container animate-in">
-  <div class="nav"><a href="/">&larr; Back to <span class="brand" style="font-size:1rem;"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
+  <div class="home-logo"><a href="/"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
   <div class="page-heading">MEET RECAP</div>
   <p class="subtitle" style="margin-bottom:0.5rem;">${escHtml(meetName || meetId)}${meetDate ? ` &mdash; ${escHtml(meetDate)}` : ''}</p>
   <p style="font-size:0.85rem;color:#555;margin-bottom:1rem;">${lifters.length} lifter${lifters.length !== 1 ? 's' : ''} &middot; ${timestamps.length} attempt${timestamps.length !== 1 ? 's' : ''}</p>
@@ -3117,7 +3118,7 @@ ${FONT_LINKS}
   .matched-lifters span { display: inline-block; background: #1A0A0A; border: 1px solid #3B1111; border-radius: 4px; padding: 0.1rem 0.4rem; margin: 0.15rem 0.2rem 0.15rem 0; font-size: 0.75rem; }
 </style>
 </head><body><div class="container animate-in">
-  <div class="nav"><a href="/">&larr; Back to <span class="brand" style="font-size:1rem;"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
+  <div class="home-logo"><a href="/"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
   <div class="page-heading">MEET RECAPS</div>
   <p class="subtitle" style="margin-bottom:1.25rem;">${recapMeets.length} meet recap${recapMeets.length !== 1 ? 's' : ''}</p>
   <input type="text" class="search-box" placeholder="Search lifters or meets..." oninput="filterRecaps(this.value)">
@@ -3216,7 +3217,7 @@ ${FONT_LINKS}
   .back-link:hover { color: #F0F0F0; }
 </style>
 </head><body><div class="card animate-in">
-  <span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span>
+  <div class="home-logo"><a href="/"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
   <div class="page-heading">${heading}</div>
   <p class="subtitle">View and manage your LiftAlert subscriptions.</p>
   <form method="GET" action="/my-subscriptions">
@@ -3401,7 +3402,7 @@ ${FONT_LINKS}
   .cancel-link:hover { color: #F0F0F0; }
 </style>
 </head><body><div class="card animate-in">
-  <span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span>
+  <div class="home-logo"><a href="/"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
   <p class="confirm-msg">Remove alert for <strong>${escHtml(lifter)}</strong> at <strong>${escHtml(meetName)}</strong>${meetDate ? ` (${escHtml(meetDate)})` : ''}?<br><span style="font-size:0.85rem;">This also stops auto-subscribing to this lifter in future meets.</span></p>
   <form id="unsub-form" method="POST" action="/unsubscribe">
     <input type="hidden" name="email" value="${escHtml(email)}">
