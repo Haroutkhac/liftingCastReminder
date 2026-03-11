@@ -1168,9 +1168,9 @@ const FORM_HTML = `<!DOCTYPE html>
     <div class="meet-count" id="meetCount"><span class="pulse-dot"></span> <span id="meetCountText"></span></div>
   </div>
   <div class="features animate-in" style="animation-delay:0.12s;">
-    <a href="/meets" class="feature-card">
-      <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49"/><path d="M7.76 16.24a6 6 0 0 1 0-8.49"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
-      <div class="feature-title">LIVE MEETS</div>
+    <a href="/meets" class="feature-card" id="meetsCard">
+      <svg class="feature-icon" id="meetsIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49"/><path d="M7.76 16.24a6 6 0 0 1 0-8.49"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
+      <div class="feature-title">ALL MEETS</div>
       <div class="feature-desc">Browse &amp; track open meets</div>
     </a>
     <a href="/my-subscriptions" class="feature-card">
@@ -1212,6 +1212,13 @@ const FORM_HTML = `<!DOCTYPE html>
         el.style.display = 'flex';
       }
     });
+
+    fetch('/api/live-count').then(r => r.json()).then(data => {
+      if (data.live > 0) {
+        var icon = document.getElementById('meetsIcon');
+        if (icon) icon.style.color = '#22C55E';
+      }
+    }).catch(function(){});
 
     form.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -1649,9 +1656,10 @@ function meetsHTML(meetList, subscribedMeetIds) {
   const subscribedSection = subscribed.length > 0
     ? `<div class="section-label section-group">YOUR MEETS</div>${subscribed.map(renderCard).join('')}`
     : '';
+  const anyLive = meetList.some(m => m.isLive);
   const liveSection = live.length > 0
     ? `<div class="section-label section-group" style="margin-top:1.5rem;">LIVE NOW</div>${live.map(renderCard).join('')}`
-    : '';
+    : (!anyLive && meetList.length > 0 ? '<p style="color:#555;text-align:center;margin:2rem 0;font-size:0.85rem;">No live meets right now.</p>' : '');
   const restSection = rest.length > 0
     ? `<div class="section-label section-group" style="margin-top:1.5rem;">ALL MEETS</div>${rest.map(renderCard).join('')}`
     : '';
@@ -3675,6 +3683,29 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
     results.sort((a, b) => a.name.localeCompare(b.name));
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(results));
+
+  } else if (req.method === 'GET' && url.pathname === '/api/live-count') {
+    let count = 0;
+    for (const st of Object.values(meets)) {
+      let hasLivePlatform = false;
+      for (const [pid, platform] of Object.entries(st.platforms)) {
+        const cached = st.platformSummaryCache?.[pid];
+        if (cached?.currentLifter) { hasLivePlatform = true; break; }
+        const parsed = parseAttemptId(platform.currentAttemptId);
+        if (parsed) {
+          const cl = st.lifters[parsed.lifterId];
+          if (cl) {
+            const currentAttempt = st.attempts[platform.currentAttemptId];
+            if (!currentAttempt || !currentAttempt.result) { hasLivePlatform = true; }
+            break;
+          }
+        }
+      }
+      const recentActivity = st.lastChangeTime > 0 && (Date.now() - st.lastChangeTime) < 30 * 60 * 1000;
+      if (hasLivePlatform && recentActivity) count++;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ live: count }));
 
   } else if (req.method === 'GET' && url.pathname === '/recaps') {
     const [recapMeets, lifterMap] = await Promise.all([getRecapMeets(), getRecapLifterNames()]);
