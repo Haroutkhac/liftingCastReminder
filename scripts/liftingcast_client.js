@@ -1115,6 +1115,8 @@ const FORM_HTML = `<!DOCTYPE html>
     .pill .pill-meet { color: #777; font-size: 0.72rem; }
     .pill .pill-clear { color: #777; cursor: pointer; font-size: 1.2rem; padding: 0 0.25rem; transition: color 0.2s; margin-left: 0.5rem; }
     .pill .pill-clear:hover { color: #FCA5A5; }
+    .pill .pill-share { color: #555; cursor: pointer; font-size: 0.7rem; padding: 0 0.25rem; transition: color 0.2s; margin-left: auto; }
+    .pill .pill-share:hover { color: #F0F0F0; }
     .pill-count { font-size: 0.75rem; color: #555; margin-top: 0.25rem; text-transform: uppercase; letter-spacing: 0.05em; }
     .no-results { padding: 0.55rem 0.85rem; color: #555; font-size: 0.85rem; }
     .meet-count { text-align: center; margin-top: 1.25rem; font-size: 0.8rem; color: #555; display: none; align-items: center; justify-content: center; gap: 0.4rem; }
@@ -1274,9 +1276,19 @@ const FORM_HTML = `<!DOCTYPE html>
       pillsContainer.innerHTML = selections.map((s, i) =>
         '<div class="pill">' +
           '<span class="pill-text">' + escHtml(s.name) + '<br><span class="pill-meet">' + escHtml(s.meetName) + '</span></span>' +
+          '<span class="pill-share" data-name="' + escHtml(s.name) + '" title="Copy follow link">&#x1F517; Share</span>' +
           '<span class="pill-clear" data-idx="' + i + '" title="Remove">&times;</span>' +
         '</div>'
       ).join('');
+      pillsContainer.querySelectorAll('.pill-share').forEach(el => {
+        el.addEventListener('click', () => {
+          const url = location.origin + '/follow/' + encodeURIComponent(el.dataset.name);
+          navigator.clipboard.writeText(url).then(() => {
+            el.textContent = '\u2705 Copied!';
+            setTimeout(() => { el.innerHTML = '&#x1F517; Share'; }, 1500);
+          }).catch(() => { prompt('Copy this link:', url); });
+        });
+      });
       pillsContainer.querySelectorAll('.pill-clear').forEach(el => {
         el.addEventListener('click', () => removeSelection(parseInt(el.dataset.idx)));
       });
