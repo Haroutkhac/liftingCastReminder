@@ -1453,6 +1453,98 @@ ${FONT_LINKS}
 </div></body></html>`;
 }
 
+function followPageHTML(lifterName, activeMeets) {
+  const meetsInfo = activeMeets.length > 0
+    ? `<p style="color:#777;font-size:0.85rem;margin-top:0.75rem;">Currently competing in: ${activeMeets.map(m => `<strong style="color:#F0F0F0;">${escHtml(m.name)}</strong>`).join(', ')}</p>`
+    : `<p style="color:#777;font-size:0.85rem;margin-top:0.75rem;">Not in an active meet right now — you'll be notified when they compete next.</p>`;
+
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Follow ${escHtml(lifterName)} - LiftAlert</title>
+${FONT_LINKS}
+<style>
+  ${SHARED_STYLES}
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1.5rem 1rem; min-height: 100vh; gap: 1.25rem; }
+  .lifter-name { font-family: 'Bebas Neue', sans-serif; font-size: 2rem; color: #F0F0F0; letter-spacing: 0.04em; text-align: center; margin-top: 0.5rem; }
+  .follow-desc { color: #999; text-align: center; font-size: 0.95rem; margin-top: 0.5rem; }
+  .pref-options { display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem 0.75rem; margin-top: 0.25rem; }
+  .pref-options label.pref { display: flex; align-items: center; gap: 0.4rem; font-size: 0.82rem; color: #CCC; text-transform: none; letter-spacing: 0; font-weight: 400; margin: 0; cursor: pointer; }
+  .pref-options input[type="checkbox"] { width: 15px; height: 15px; accent-color: #DC2626; cursor: pointer; flex-shrink: 0; }
+</style>
+</head><body>
+  <div class="card animate-in">
+    <div style="text-align:center;margin-bottom:0.5rem;">
+      <span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span>
+    </div>
+    <div class="lifter-name">${escHtml(lifterName)}</div>
+    <p class="follow-desc">Enter your email to get notified when <strong>${escHtml(lifterName)}</strong> is about to lift.</p>
+    ${meetsInfo}
+    <form method="POST" action="/follow" id="followForm">
+      <input type="hidden" name="lifter" value="${escHtml(lifterName)}">
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" required placeholder="you@example.com">
+
+      <label>Notify me when</label>
+      <div class="pref-options">
+        <label class="pref"><input type="checkbox" name="pref" value="in-the-hole" checked> In the Hole (2 away)</label>
+        <label class="pref"><input type="checkbox" name="pref" value="on-deck"> On Deck (next up)</label>
+        <label class="pref"><input type="checkbox" name="pref" value="lifting"> Lifting Now</label>
+        <label class="pref"><input type="checkbox" name="pref" value="5-min-out"> ~5 Minutes Out</label>
+        <label class="pref"><input type="checkbox" name="pref" value="10-min-out"> ~10 Minutes Out</label>
+        <label class="pref"><input type="checkbox" name="pref" value="flight-start"> Start of Flight</label>
+      </div>
+
+      <button type="submit" class="btn-primary">FOLLOW ${escHtml(lifterName).toUpperCase()}</button>
+    </form>
+  </div>
+  <script>
+    try {
+      const savedEmail = localStorage.getItem('liftalert_email');
+      if (savedEmail) document.getElementById('email').value = savedEmail;
+    } catch(e) {}
+    document.getElementById('followForm').addEventListener('submit', function() {
+      try { localStorage.setItem('liftalert_email', document.getElementById('email').value); } catch(e) {}
+    });
+  </script>
+</body></html>`;
+}
+
+function followSuccessHTML(email, lifterName, activeMeets) {
+  const meetRows = activeMeets.map(m => {
+    return `<tr><td>${escHtml(m.name)}</td><td style="color:#555;font-size:0.8rem;">${escHtml(m.date || '')}</td></tr>`;
+  }).join('');
+
+  const meetsSection = activeMeets.length > 0
+    ? `<p class="confirm-text">You've been subscribed for these active meets:</p>
+       <table><thead><tr><th>Meet</th><th>Date</th></tr></thead><tbody>${meetRows}</tbody></table>`
+    : `<p class="confirm-text">They're not in an active meet right now, but you'll be <strong>automatically subscribed</strong> when they compete next.</p>`;
+
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Following ${escHtml(lifterName)} - LiftAlert</title>
+${FONT_LINKS}
+<style>
+  ${SHARED_STYLES}
+  body { display: flex; align-items: center; justify-content: center; padding: 1rem; }
+  .card { max-width: 520px; }
+  .success-heading { font-family: 'Bebas Neue', sans-serif; font-size: 2rem; color: #22C55E; text-align: center; letter-spacing: 0.06em; margin-bottom: 0.5rem; }
+  .confirm-text { color: #999; text-align: center; margin-bottom: 1rem; font-size: 0.95rem; }
+  .confirm-text strong { color: #F0F0F0; }
+  .spam-warning { background: #1A1700; border: 1px solid #422006; border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1.25rem; font-size: 0.85rem; color: #F59E0B; text-align: center; }
+  .cta { text-align: center; margin-top: 1.5rem; }
+  .cta a { color: #777; font-size: 0.88rem; }
+  .cta a:hover { color: #F0F0F0; }
+</style>
+</head><body><div class="card animate-in">
+  <div style="text-align:center;margin-bottom:1.25rem;"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></div>
+  <div class="success-heading">FOLLOWING ${escHtml(lifterName).toUpperCase()}!</div>
+  <p class="confirm-text">You'll get alerts whenever <strong>${escHtml(lifterName)}</strong> is about to lift.</p>
+  ${meetsSection}
+  <div class="spam-warning">Check your spam/junk folder and mark our emails as &ldquo;Not Spam&rdquo; so you don't miss alerts.</div>
+  <div class="cta"><a href="/">&larr; Back to LiftAlert</a></div>
+</div></body></html>`;
+}
+
 function unsubHTML(success) {
   const msg = success ? 'You have been unsubscribed. You will no longer be auto-subscribed to this lifter in future meets.' : 'Subscription not found (may already be removed).';
   return `<!DOCTYPE html>
@@ -3773,6 +3865,82 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
       const meetName = st.meet?.name || liveMeetId;
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(liveHTML(liveMeetId, meetName));
+    }
+
+  } else if (req.method === 'GET' && url.pathname.match(/^\/follow\/.+$/)) {
+    const lifterName = decodeURIComponent(url.pathname.slice('/follow/'.length));
+    // Find active meets where this lifter is competing
+    const activeMeets = [];
+    for (const [meetId, st] of Object.entries(meets)) {
+      if (!st.lifters) continue;
+      const found = Object.values(st.lifters).some(l => l.name && l.name.toLowerCase() === lifterName.toLowerCase());
+      if (found) {
+        activeMeets.push({ meetId, name: st.meet?.name || meetId, date: st.meet?.date || '' });
+      }
+    }
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(followPageHTML(lifterName, activeMeets));
+
+  } else if (req.method === 'POST' && url.pathname === '/follow') {
+    let body = '';
+    let tooLarge = false;
+    const MAX_BODY = 32768;
+    for await (const chunk of req) {
+      body += chunk;
+      if (body.length > MAX_BODY) { tooLarge = true; break; }
+    }
+    if (tooLarge) {
+      res.writeHead(413, { 'Content-Type': 'text/plain' });
+      res.end('Request body too large');
+      return;
+    }
+
+    const params = new URLSearchParams(body);
+    const email = params.get('email');
+    const lifterName = params.get('lifter');
+    const prefValues = params.getAll('pref');
+    const notifyPrefs = prefValues.length > 0 ? prefValues.join(',') : 'in-the-hole';
+
+    if (!email || !lifterName) {
+      res.writeHead(400, { 'Content-Type': 'text/html' });
+      res.end(errorHTML('Missing required fields: email and lifter name.'));
+      return;
+    }
+
+    try {
+      // Save email to localStorage-like behavior handled client-side
+      // Add persistent subscription (follows across all future meets)
+      await addPersistentSubscription(email, lifterName, notifyPrefs);
+      console.log(`[FOLLOW] ${email} -> "${lifterName}" (persistent, prefs: ${notifyPrefs})`);
+
+      // Also subscribe to any currently active meets for this lifter
+      const activeMeets = [];
+      for (const [meetId, st] of Object.entries(meets)) {
+        if (!st.lifters) continue;
+        const found = Object.values(st.lifters).some(l => l.name && l.name.toLowerCase() === lifterName.toLowerCase());
+        if (found) {
+          await addSubscription(email, lifterName, meetId, notifyPrefs);
+          delete subsCache[meetId];
+          startMeet(meetId);
+          const meetName = st.meet?.name || meetId;
+          const meetDate = st.meet?.date || '';
+          activeMeets.push({ meetId, name: meetName, date: meetDate });
+          console.log(`[FOLLOW] Also subscribed ${email} to "${lifterName}" in meet ${meetId}`);
+        }
+      }
+
+      // Send confirmation email
+      if (activeMeets.length > 0) {
+        const first = activeMeets[0];
+        sendSubscriptionConfirmation(email, lifterName, first.name, first.date, first.meetId, notifyPrefs);
+      }
+
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(followSuccessHTML(email, lifterName, activeMeets));
+    } catch (err) {
+      console.error(`[FOLLOW ERROR] ${err.message}`);
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Failed to follow. Please try again.');
     }
 
   } else {
