@@ -1919,7 +1919,7 @@ function meetDetailHTML(meetId, meetState, subscribedLifterNames, videoData, tim
       return `<td class="cell" style="color:#555;${borderR}">${w}</td>`;
     }).join('');
     return `${separator}<tr class="lifter-row" data-name="${escHtml(l.name.toLowerCase())}" data-wc="${l.weightClass || ''}">
-      <td class="lifter-name"><a href="https://www.openpowerlifting.org/u/${encodeURIComponent(l.name.toLowerCase().replace(/[^a-z]/g, ''))}" target="_blank"${subHighlight ? ` style="color:#DC2626;"` : ''}>${escHtml(l.name)}</a>${bwLabel}</td>
+      <td class="lifter-name"><a href="https://www.openpowerlifting.org/u/${encodeURIComponent(l.name.toLowerCase().replace(/[^a-z]/g, ''))}" target="_blank"${subHighlight ? ` style="color:#DC2626;"` : ''}>${escHtml(l.name)}</a> <span class="share-follow" title="Copy follow link" onclick="event.stopPropagation();copyFollowLink(this,'${escHtml(l.name).replace(/'/g, "\\'")}')">&#x1F517;</span>${bwLabel}</td>
       ${cells}
     </tr>`;
   }).join('');
@@ -1962,6 +1962,10 @@ ${FONT_LINKS}
   .empty-state p { margin-bottom: 0.5rem; }
   .subscribe-link { display: inline-block; margin-top: 1rem; padding: 0.6rem 1.5rem; background: #DC2626; color: white; border-radius: 8px; font-family: 'Bebas Neue', sans-serif; font-size: 1rem; letter-spacing: 0.1em; transition: background 0.2s; }
   .subscribe-link:hover { background: #B91C1C; color: white; }
+  .share-follow { cursor: pointer; font-size: 0.6rem; opacity: 0; transition: opacity 0.2s; vertical-align: middle; user-select: none; }
+  tr:hover .share-follow { opacity: 0.5; }
+  .share-follow:hover { opacity: 1 !important; }
+  .share-follow.copied { opacity: 1 !important; }
   @media (max-width: 600px) {
     .scoresheet .lifter-name { font-size: 0.7rem; padding: 0.35rem 0.4rem; max-width: 100px; }
     .scoresheet .cell { padding: 0.3rem 0.1rem; font-size: 0.65rem; }
@@ -2002,6 +2006,16 @@ ${FONT_LINKS}
     }
   } catch(e) {}
 })();
+function copyFollowLink(el, name) {
+  var url = location.origin + '/follow/' + encodeURIComponent(name);
+  navigator.clipboard.writeText(url).then(function() {
+    el.textContent = '\u2705';
+    el.classList.add('copied');
+    setTimeout(function() { el.innerHTML = '&#x1F517;'; el.classList.remove('copied'); }, 1500);
+  }).catch(function() {
+    prompt('Copy this link:', url);
+  });
+}
 function filterLifters(q) {
   const rows = document.querySelectorAll('.lifter-row');
   const seps = document.querySelectorAll('.wc-separator');
@@ -2129,6 +2143,12 @@ ${FONT_LINKS}
 
   /* Flight/session badge */
   .flight-badge { display: inline-block; font-size: 0.6rem; color: #555; font-weight: 600; margin-left: 0.3rem; }
+
+  /* Share follow link icon */
+  .share-follow { cursor: pointer; font-size: 0.6rem; opacity: 0; transition: opacity 0.2s; vertical-align: middle; user-select: none; }
+  tr:hover .share-follow { opacity: 0.5; }
+  .share-follow:hover { opacity: 1 !important; }
+  .share-follow.copied { opacity: 1 !important; }
 
   .updated-ago { font-size: 0.75rem; color: #444; margin-top: 0.5rem; text-align: center; }
   .empty-state { text-align: center; padding: 2rem 1rem; color: #555; }
@@ -2316,6 +2336,18 @@ function applyHypotheticals(lifters) {
 function opLink(name) {
   const slug = name.toLowerCase().replace(/[^a-z]/g, '');
   return 'https://www.openpowerlifting.org/u/' + slug;
+}
+
+function copyFollowLink(el, name) {
+  const url = location.origin + '/follow/' + encodeURIComponent(name);
+  navigator.clipboard.writeText(url).then(function() {
+    const prev = el.textContent;
+    el.textContent = '\\u2705';
+    el.classList.add('copied');
+    setTimeout(function() { el.innerHTML = '&#x1F517;'; el.classList.remove('copied'); }, 1500);
+  }).catch(function() {
+    prompt('Copy this link:', url);
+  });
 }
 
 function esc(s) {
@@ -2609,6 +2641,7 @@ function renderScoreboard(data) {
 
     // Name
     row += '<td class="col-name"><a href="' + opLink(l.name) + '" target="_blank">' + esc(l.name) + '</a>';
+    row += ' <span class="share-follow" title="Copy follow link" onclick="event.stopPropagation();copyFollowLink(this,\'' + esc(l.name).replace(/'/g, "\\'") + '\')">&#x1F517;</span>';
     if (l.team) row += ' <span style="color:#555;font-size:0.62rem;">' + esc(l.team) + '</span>';
     if (l.division) row += '<br><span style="color:#666;font-size:0.58rem;font-weight:400;">' + esc(l.division) + '</span>';
     row += '</td>';
