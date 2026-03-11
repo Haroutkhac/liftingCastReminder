@@ -1115,8 +1115,9 @@ const FORM_HTML = `<!DOCTYPE html>
     .pill .pill-meet { color: #777; font-size: 0.72rem; }
     .pill .pill-clear { color: #777; cursor: pointer; font-size: 1.2rem; padding: 0 0.25rem; transition: color 0.2s; margin-left: 0.5rem; }
     .pill .pill-clear:hover { color: #FCA5A5; }
-    .pill .pill-share { color: #555; cursor: pointer; font-size: 0.7rem; padding: 0 0.25rem; transition: color 0.2s; margin-left: auto; }
-    .pill .pill-share:hover { color: #F0F0F0; }
+    .pill .pill-share { cursor: pointer; padding: 0 0.25rem; transition: opacity 0.2s; margin-left: auto; opacity: 0.4; display: flex; align-items: center; }
+    .pill .pill-share:hover { opacity: 1; }
+    .pill .pill-share svg { width: 14px; height: 14px; }
     .pill-count { font-size: 0.75rem; color: #555; margin-top: 0.25rem; text-transform: uppercase; letter-spacing: 0.05em; }
     .no-results { padding: 0.55rem 0.85rem; color: #555; font-size: 0.85rem; }
     .meet-count { text-align: center; margin-top: 1.25rem; font-size: 0.8rem; color: #555; display: none; align-items: center; justify-content: center; gap: 0.4rem; }
@@ -1276,7 +1277,7 @@ const FORM_HTML = `<!DOCTYPE html>
       pillsContainer.innerHTML = selections.map((s, i) =>
         '<div class="pill">' +
           '<span class="pill-text">' + escHtml(s.name) + '<br><span class="pill-meet">' + escHtml(s.meetName) + '</span></span>' +
-          '<span class="pill-share" data-name="' + escHtml(s.name) + '" title="Copy follow link">&#x1F517; Share</span>' +
+          '<span class="pill-share" data-name="' + escHtml(s.name) + '" title="Copy follow link"><svg viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span>' +
           '<span class="pill-clear" data-idx="' + i + '" title="Remove">&times;</span>' +
         '</div>'
       ).join('');
@@ -1284,8 +1285,8 @@ const FORM_HTML = `<!DOCTYPE html>
         el.addEventListener('click', () => {
           const url = location.origin + '/follow/' + encodeURIComponent(el.dataset.name);
           navigator.clipboard.writeText(url).then(() => {
-            el.textContent = '\u2705 Copied!';
-            setTimeout(() => { el.innerHTML = '&#x1F517; Share'; }, 1500);
+            el.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="#22C55E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+            setTimeout(() => { el.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>'; }, 1500);
           }).catch(() => { prompt('Copy this link:', url); });
         });
       });
@@ -1931,7 +1932,7 @@ function meetDetailHTML(meetId, meetState, subscribedLifterNames, videoData, tim
       return `<td class="cell" style="color:#555;${borderR}">${w}</td>`;
     }).join('');
     return `${separator}<tr class="lifter-row" data-name="${escHtml(l.name.toLowerCase())}" data-wc="${l.weightClass || ''}">
-      <td class="lifter-name"><a href="https://www.openpowerlifting.org/u/${encodeURIComponent(l.name.toLowerCase().replace(/[^a-z]/g, ''))}" target="_blank"${subHighlight ? ` style="color:#DC2626;"` : ''}>${escHtml(l.name)}</a> <span class="share-follow" title="Copy follow link" onclick="event.stopPropagation();copyFollowLink(this,'${escHtml(l.name).replace(/'/g, "\\'")}')">&#x1F517;</span>${bwLabel}</td>
+      <td class="lifter-name"><a href="https://www.openpowerlifting.org/u/${encodeURIComponent(l.name.toLowerCase().replace(/[^a-z]/g, ''))}" target="_blank"${subHighlight ? ` style="color:#DC2626;"` : ''}>${escHtml(l.name)}</a>${bwLabel}</td>
       ${cells}
     </tr>`;
   }).join('');
@@ -1974,10 +1975,6 @@ ${FONT_LINKS}
   .empty-state p { margin-bottom: 0.5rem; }
   .subscribe-link { display: inline-block; margin-top: 1rem; padding: 0.6rem 1.5rem; background: #DC2626; color: white; border-radius: 8px; font-family: 'Bebas Neue', sans-serif; font-size: 1rem; letter-spacing: 0.1em; transition: background 0.2s; }
   .subscribe-link:hover { background: #B91C1C; color: white; }
-  .share-follow { cursor: pointer; font-size: 0.6rem; opacity: 0; transition: opacity 0.2s; vertical-align: middle; user-select: none; }
-  tr:hover .share-follow { opacity: 0.5; }
-  .share-follow:hover { opacity: 1 !important; }
-  .share-follow.copied { opacity: 1 !important; }
   @media (max-width: 600px) {
     .scoresheet .lifter-name { font-size: 0.7rem; padding: 0.35rem 0.4rem; max-width: 100px; }
     .scoresheet .cell { padding: 0.3rem 0.1rem; font-size: 0.65rem; }
@@ -2018,16 +2015,6 @@ ${FONT_LINKS}
     }
   } catch(e) {}
 })();
-function copyFollowLink(el, name) {
-  var url = location.origin + '/follow/' + encodeURIComponent(name);
-  navigator.clipboard.writeText(url).then(function() {
-    el.textContent = '\u2705';
-    el.classList.add('copied');
-    setTimeout(function() { el.innerHTML = '&#x1F517;'; el.classList.remove('copied'); }, 1500);
-  }).catch(function() {
-    prompt('Copy this link:', url);
-  });
-}
 function filterLifters(q) {
   const rows = document.querySelectorAll('.lifter-row');
   const seps = document.querySelectorAll('.wc-separator');
@@ -2155,12 +2142,6 @@ ${FONT_LINKS}
 
   /* Flight/session badge */
   .flight-badge { display: inline-block; font-size: 0.6rem; color: #555; font-weight: 600; margin-left: 0.3rem; }
-
-  /* Share follow link icon */
-  .share-follow { cursor: pointer; font-size: 0.6rem; opacity: 0; transition: opacity 0.2s; vertical-align: middle; user-select: none; }
-  tr:hover .share-follow { opacity: 0.5; }
-  .share-follow:hover { opacity: 1 !important; }
-  .share-follow.copied { opacity: 1 !important; }
 
   .updated-ago { font-size: 0.75rem; color: #444; margin-top: 0.5rem; text-align: center; }
   .empty-state { text-align: center; padding: 2rem 1rem; color: #555; }
@@ -2350,17 +2331,7 @@ function opLink(name) {
   return 'https://www.openpowerlifting.org/u/' + slug;
 }
 
-function copyFollowLink(el, name) {
-  const url = location.origin + '/follow/' + encodeURIComponent(name);
-  navigator.clipboard.writeText(url).then(function() {
-    const prev = el.textContent;
-    el.textContent = '\\u2705';
-    el.classList.add('copied');
-    setTimeout(function() { el.innerHTML = '&#x1F517;'; el.classList.remove('copied'); }, 1500);
-  }).catch(function() {
-    prompt('Copy this link:', url);
-  });
-}
+
 
 function esc(s) {
   const d = document.createElement('div');
@@ -2653,7 +2624,6 @@ function renderScoreboard(data) {
 
     // Name
     row += '<td class="col-name"><a href="' + opLink(l.name) + '" target="_blank">' + esc(l.name) + '</a>';
-    row += ' <span class="share-follow" title="Copy follow link" onclick="event.stopPropagation();copyFollowLink(this,\'' + esc(l.name).replace(/'/g, "\\'") + '\')">&#x1F517;</span>';
     if (l.team) row += ' <span style="color:#555;font-size:0.62rem;">' + esc(l.team) + '</span>';
     if (l.division) row += '<br><span style="color:#666;font-size:0.58rem;font-weight:400;">' + esc(l.division) + '</span>';
     row += '</td>';
