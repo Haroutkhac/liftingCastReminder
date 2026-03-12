@@ -1763,19 +1763,21 @@ function meetDetailHTML(meetId, meetState, subscribedLifterNames, videoData, tim
   if (videoData && timestamps && timestamps.length > 0) {
     const streamStart = Number(videoData.stream_start_epoch);
     const videoId = videoData.youtube_video_id;
-    // Group timestamps by lifter+lift, pick the highest weight attempt
-    const bestByLifterLift = {};
-    for (const t of timestamps) {
-      const liftKey = LIFT_KEY_MAP[t.lift_name] || t.lift_name;
-      const key = `${t.lifter_name.toLowerCase()}:${liftKey}`;
-      const w = Number(t.weight) || 0;
-      if (!bestByLifterLift[key] || w > bestByLifterLift[key].weight) {
-        bestByLifterLift[key] = { weight: w, wallEpoch: Math.floor(new Date(t.wall_clock_time).getTime() / 1000) };
+    if (streamStart > 0) {
+      // Group timestamps by lifter+lift, pick the highest weight attempt
+      const bestByLifterLift = {};
+      for (const t of timestamps) {
+        const liftKey = LIFT_KEY_MAP[t.lift_name] || t.lift_name;
+        const key = `${t.lifter_name.toLowerCase()}:${liftKey}`;
+        const w = Number(t.weight) || 0;
+        if (!bestByLifterLift[key] || w > bestByLifterLift[key].weight) {
+          bestByLifterLift[key] = { weight: w, wallEpoch: Math.floor(new Date(t.wall_clock_time).getTime() / 1000) };
+        }
       }
-    }
-    for (const [key, val] of Object.entries(bestByLifterLift)) {
-      const offset = Math.max(0, val.wallEpoch - streamStart - TIMESTAMP_LEAD_SECONDS);
-      vodLinks[key] = `https://youtube.com/watch?v=${videoId}&t=${offset}`;
+      for (const [key, val] of Object.entries(bestByLifterLift)) {
+        const offset = Math.max(0, val.wallEpoch - streamStart - TIMESTAMP_LEAD_SECONDS);
+        vodLinks[key] = `https://youtube.com/watch?v=${videoId}&t=${offset}`;
+      }
     }
   }
 
@@ -2221,7 +2223,7 @@ ${FONT_LINKS}
       <select id="sort-by" class="filter-select">
         <option value="order">Sort: Attempt Order</option>
         <option value="wc">Sort: Weight Class</option>
-        <option value="total">Sort: Total</option>
+        <option value="total" selected>Sort: Total</option>
         <option value="name">Sort: Name</option>
       </select>
       <button id="hypo-btn" class="hypo-btn">What If?</button>
@@ -2244,7 +2246,7 @@ const MEET_ID = '${escHtml(meetId)}';
 const LIFT_LABEL = { squat: 'SQ', bench: 'BP', dead: 'DL', deadlift: 'DL' };
 let lastData = null;
 let currentFilters = { search: '', session: '', flight: '', wc: '', platform: '' };
-let currentSort = 'order';
+let currentSort = 'total';
 
 
 
