@@ -176,17 +176,27 @@ function computeLifterBests(meetState, lifterId) {
   return bests;
 }
 
-// --- Compute standings for all lifters on a platform ---
-function computeStandings(meetState, platformId) {
-  const platformLifterIds = Object.values(meetState.lifters)
-    .filter(l => l.platformId === platformId)
-    .map(l => l._id);
+// --- Compute standings for lifters in same weight class on a platform ---
+function computeStandings(meetState, platformId, targetLifterId) {
+  const targetLifter = meetState.lifters[targetLifterId];
+  const targetWc = targetLifter?.weightClass || null;
+  const targetGender = targetLifter?.gender || null;
+
+  const platformLifters = Object.values(meetState.lifters)
+    .filter(l => l.platformId === platformId);
+
+  // Filter to same weight class and gender if available
+  const filtered = platformLifters.filter(l => {
+    if (targetWc && l.weightClass && l.weightClass !== targetWc) return false;
+    if (targetGender && l.gender && l.gender !== targetGender) return false;
+    return true;
+  });
 
   const standings = [];
-  for (const lid of platformLifterIds) {
-    const bests = computeLifterBests(meetState, lid);
+  for (const l of filtered) {
+    const bests = computeLifterBests(meetState, l._id);
     const total = bests.squat + bests.bench + bests.dead;
-    standings.push({ lifterId: lid, total, bests });
+    standings.push({ lifterId: l._id, total, bests });
   }
   // Sort descending by total (higher total = better place)
   standings.sort((a, b) => b.total - a.total);
@@ -195,7 +205,7 @@ function computeStandings(meetState, platformId) {
 
 // --- Get place info for a lifter, including projected place if attempt succeeds ---
 function getPlaceInfo(meetState, platformId, lifterId, attemptWeight, liftName) {
-  const standings = computeStandings(meetState, platformId);
+  const standings = computeStandings(meetState, platformId, lifterId);
   const totalCompetitors = standings.length;
 
   // Current place (among lifters with total > 0)
@@ -277,6 +287,15 @@ function processDoc(meetId, doc) {
   if (!doc || !doc._id) return;
   const id = doc._id;
   const st = getMeetState(meetId);
+
+  if (doc._deleted) {
+    delete st.lifters[id];
+    delete st.attempts[id];
+    delete st.platforms[id];
+    delete st.divisions[id];
+    if (id === meetId) st.meet = null;
+    return;
+  }
 
   if (id === meetId) {
     st.meet = doc;
@@ -963,17 +982,20 @@ const TIMESTAMP_LEAD_SECONDS = 15;
 // --- YouTube auto-discovery ---
 const videoSearched = new Set(); // track which meets we've already searched for
 
-function ytFetch(url) {
+function ytFetch(url, depth = 0) {
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en' } }, (res) => {
+    if (depth > 5) return reject(new Error('Too many redirects'));
+    const req = https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en' }, timeout: 15000 }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        return ytFetch(res.headers.location).then(resolve, reject);
+        return ytFetch(res.headers.location, depth + 1).then(resolve, reject);
       }
       let body = '';
       res.on('data', chunk => body += chunk);
       res.on('end', () => resolve(body));
       res.on('error', reject);
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('ytFetch timeout')); });
   });
 }
 
@@ -1379,7 +1401,7 @@ ${FONT_LINKS}
 </style>
 </head><body><div class="card animate-in">
   <div class="home-logo"><a href="/"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
-  <div class="error-msg">${msg}</div>
+  <div class="error-msg">${escHtml(msg)}</div>
   <a href="/" class="back-link">&larr; Go back</a>
 </div></body></html>`;
 }
@@ -1755,7 +1777,7 @@ function meetDetailHTML(meetId, meetState, subscribedLifterNames, videoData, tim
   const meetName = meetDoc.name || meetId;
   const dateStr = meetDoc.date || '';
   const locationStr = meetDoc.location || meetDoc.city || '';
-  const meta = [dateStr, locationStr].filter(Boolean).join(' &middot; ');
+  const meta = [dateStr, locationStr].filter(Boolean).map(s => escHtml(s)).join(' &middot; ');
 
   // Build VOD timestamp lookup: lifterId+liftName → best (highest weight) timestamp link
   const LIFT_KEY_MAP = { squat: 'sq', bench: 'bp', dead: 'dl', deadlift: 'dl' };
@@ -2602,7 +2624,7 @@ function renderScoreboard(data) {
   // Body rows
   let lastWc = null;
   let lastGender = null;
-  const totalColCount = 4 + attemptCols.length + 3;
+  const totalColCount = 3 + attemptCols.length + 3;
 
   const rows = lifters.map(l => {
     let sep = '';
@@ -2935,12 +2957,20 @@ function recapHTML(meetId, meetName, videoId, streamStart, timestamps, meetDate)
     if (t.body_weight && !byLifter[t.lifter_id].bodyWeight) byLifter[t.lifter_id].bodyWeight = Number(t.body_weight);
   }
 
-  // Sort by weight class (asc), then body weight (asc), then name
+  // Compute total per lifter (max weight per lift type)
+  for (const l of Object.values(byLifter)) {
+    const bestSq = Math.max(0, ...['sq1','sq2','sq3'].map(k => Number(l.cells[k]?.weight) || 0));
+    const bestBp = Math.max(0, ...['bp1','bp2','bp3'].map(k => Number(l.cells[k]?.weight) || 0));
+    const bestDl = Math.max(0, ...['dl1','dl2','dl3'].map(k => Number(l.cells[k]?.weight) || 0));
+    l.total = bestSq + bestBp + bestDl;
+  }
+
+  // Sort by weight class (asc), then total (desc) within each weight class
   const lifters = Object.values(byLifter).sort((a, b) => {
-    const wcA = a.bodyWeight || 9999;
-    const wcB = b.bodyWeight || 9999;
+    const wcA = getWeightClass(a.bodyWeight, null, null) || 9999;
+    const wcB = getWeightClass(b.bodyWeight, null, null) || 9999;
     if (wcA !== wcB) return wcA - wcB;
-    return a.name.localeCompare(b.name);
+    return (b.total || 0) - (a.total || 0);
   });
 
   // Detect which column groups are present
@@ -2961,13 +2991,13 @@ function recapHTML(meetId, meetName, videoId, streamStart, timestamps, meetDate)
   if (hasDl) groups.push({ label: 'DEADLIFT', cols: 3 });
   const groupRow = groups.map(g =>
     `<th colspan="${g.cols}" style="text-align:center;padding:0.4rem 0;color:#DC2626;font-size:0.65rem;letter-spacing:0.12em;border-bottom:1px solid #252525;">${g.label}</th>`
-  ).join('');
+  ).join('') + '<th rowspan="2" style="text-align:center;min-width:52px;padding:0.35rem 0.2rem;font-size:0.65rem;color:#DC2626;letter-spacing:0.1em;border-bottom:1px solid #252525;vertical-align:bottom;">TOTAL</th>';
   const subHeaderRow = activeCols.map(c =>
     `<th style="text-align:center;min-width:48px;padding:0.35rem 0.2rem;font-size:0.65rem;">${colLabels[c]}</th>`
   ).join('');
 
   // Build body rows with weight class separators
-  const totalCols = activeCols.length + 1;
+  const totalCols = activeCols.length + 2; // +1 name, +1 total
   let lastWc = null;
   const bodyRows = lifters.map((l, i) => {
     let separator = '';
@@ -2987,9 +3017,11 @@ function recapHTML(meetId, meetName, videoId, streamStart, timestamps, meetDate)
       }
       return `<td class="cell">${w}</td>`;
     }).join('');
+    const totalCell = l.total ? `<td class="cell" style="font-weight:600;color:#F0F0F0;">${l.total}</td>` : '<td class="cell empty">&mdash;</td>';
     return `${separator}<tr class="lifter-row" data-name="${escHtml(l.name.toLowerCase())}" data-wc="${wc || ''}">
       <td class="lifter-name"><a href="https://www.openpowerlifting.org/u/${escHtml(l.name.toLowerCase().replace(/[^a-z]/g, ''))}" target="_blank" style="color:inherit;text-decoration:none;">${escHtml(l.name)}</a>${bwLabel}</td>
       ${cells}
+      ${totalCell}
     </tr>`;
   }).join('');
 
@@ -3439,9 +3471,15 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
 
   } else if (req.method === 'POST' && url.pathname === '/unsubscribe') {
     let body = '';
+    let tooLarge = false;
     for await (const chunk of req) {
       body += chunk;
-      if (body.length > 8192) break;
+      if (body.length > 8192) { tooLarge = true; break; }
+    }
+    if (tooLarge) {
+      res.writeHead(413, { 'Content-Type': 'text/plain' });
+      res.end('Request body too large');
+      return;
     }
     const formData = parseFormBody(body);
     const { email, lifter, meet } = formData;
@@ -3473,9 +3511,15 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
 
   } else if (req.method === 'POST' && url.pathname === '/stop-following') {
     let body = '';
+    let tooLarge = false;
     for await (const chunk of req) {
       body += chunk;
-      if (body.length > 8192) break;
+      if (body.length > 8192) { tooLarge = true; break; }
+    }
+    if (tooLarge) {
+      res.writeHead(413, { 'Content-Type': 'text/plain' });
+      res.end('Request body too large');
+      return;
     }
     const { email, lifter } = parseFormBody(body);
     if (!email || !lifter) {
