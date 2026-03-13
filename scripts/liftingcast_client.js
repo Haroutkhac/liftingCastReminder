@@ -1813,7 +1813,7 @@ function applyFilters() {
       if (currentFilter === 'live') {
         show = cat === 'live' || cat === 'sub';
       } else if (currentFilter === 'today') {
-        show = cat === 'today' || cat === 'live' || cat === 'sub';
+        show = cat === 'today';
       } else if (currentFilter === 'past') {
         show = cat === 'past';
       } else if (currentFilter === 'vod') {
