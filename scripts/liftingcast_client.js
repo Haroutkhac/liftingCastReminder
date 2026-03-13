@@ -29,7 +29,8 @@ const https = require('https');
 const { initDB, getSubscriptions, getAllMeetIds, addSubscription, removeSubscription, getSubscriptionsByEmail,
         addPersistentSubscription, removePersistentSubscription, getPersistentSubscriptionsByEmail, getAllPersistentSubscriptions,
         getStats, logAttemptTimestamp, getAttemptTimestampsByMeet, getMeetVideo, getMeetVideos, setMeetVideo,
-        getRecapLifterNames, getRecapMeets, getEmailStats } = require('./db');
+        getRecapLifterNames, getRecapMeets, getEmailStats,
+        isRecapSent, markRecapSent, deleteSubscriptionsForMeet, updateAttemptResult } = require('./db');
 const { sendOnDeckEmail, sendSubscriptionConfirmation, sendAutoSubscribeNotification, sendRecapEmail } = require('./email');
 const { getMeetPlatform, loadSymPlmeetMeet, watchSymPlmeet, stopSymPlmeet,
         stopAllSymPlmeet, discoverTodaysSymPlmeetMeets, normalizeSymPlmeetData } = require('./symplmeet_client');
@@ -307,6 +308,11 @@ function processDoc(meetId, doc) {
     st.divisions[id] = doc;
   } else if (id.startsWith('a')) {
     st.attempts[id] = doc;
+    // Persist result (good/bad) to attempt_timestamps for recap emails
+    if (doc.result) {
+      updateAttemptResult(meetId, id, doc.result)
+        .catch(err => console.error(`[RESULT UPDATE ERROR] ${err.message}`));
+    }
   }
 }
 
@@ -334,7 +340,10 @@ async function notifySubscribers(meetId, lifterName, liftName, position, details
 // --- Send recap emails when a meet ends ---
 async function sendMeetRecaps(meetId) {
   if (recapsSent.has(meetId)) return;
+  // Check DB to survive redeploys
+  if (await isRecapSent(meetId)) { recapsSent.add(meetId); return; }
   recapsSent.add(meetId);
+  await markRecapSent(meetId);
 
   try {
     const subs = await getSubscriptions(meetId);
@@ -343,18 +352,30 @@ async function sendMeetRecaps(meetId) {
       return;
     }
 
-    const timestamps = await getAttemptTimestampsByMeet(meetId);
+    let timestamps = await getAttemptTimestampsByMeet(meetId);
     if (timestamps.length === 0) {
       console.log(`[RECAP] No timestamps for meet ${meetId}, skipping`);
       return;
+    }
+
+    // Backfill results from in-memory attempt docs into DB
+    const st = getMeetState(meetId);
+    for (const t of timestamps) {
+      if (!t.result && st.attempts[t.attempt_id]) {
+        const result = st.attempts[t.attempt_id].result;
+        if (result) {
+          await updateAttemptResult(meetId, t.attempt_id, result);
+          t.result = result;
+        }
+      }
     }
 
     const video = await getMeetVideo(meetId);
     const videoId = video?.youtube_video_id || null;
     const streamStart = video ? Number(video.stream_start_epoch) : null;
 
-    const meetName = getMeetState(meetId).meet?.name || video?.meet_name || meetId;
-    const meetDate = getMeetState(meetId).meet?.date || video?.meet_date || '';
+    const meetName = st.meet?.name || video?.meet_name || meetId;
+    const meetDate = st.meet?.date || video?.meet_date || '';
 
     // Group timestamps by lifter_name (lowercase key)
     const byLifter = {};
@@ -385,6 +406,7 @@ async function sendMeetRecaps(meetId) {
           lift_name: t.lift_name,
           attempt_number: t.attempt_number,
           weight: t.weight,
+          result: t.result || null,
           timeFormatted,
           youtubeLink,
         };
@@ -402,6 +424,9 @@ async function sendMeetRecaps(meetId) {
 // --- Check platforms for tracked lifter ---
 function checkPlatforms(meetId) {
   const st = getMeetState(meetId);
+
+  // Don't send notifications for stale (completed) meets
+  const stale = isMeetStale(meetId);
 
   for (const [platformId, platform] of Object.entries(st.platforms)) {
     const parsed = parseAttemptId(platform.currentAttemptId);
@@ -473,10 +498,12 @@ function checkPlatforms(meetId) {
       const flightLiftKey = `${currentLifter?.flight}:${parsed.liftName}`;
       if (!ts.notifiedFlightStarts.has(flightLiftKey) && ts.lastFlightLift !== flightLiftKey) {
         ts.notifiedFlightStarts.add(flightLiftKey);
-        const flightLifters = Object.values(st.lifters)
-          .filter(l => l.platformId === platformId && l.flight === currentLifter?.flight);
-        for (const lifter of flightLifters) {
-          notifySubscribers(meetId, lifter.name, parsed.liftName, 'flight-start', { flight: currentLifter?.flight });
+        if (!stale) {
+          const flightLifters = Object.values(st.lifters)
+            .filter(l => l.platformId === platformId && l.flight === currentLifter?.flight);
+          for (const lifter of flightLifters) {
+            notifySubscribers(meetId, lifter.name, parsed.liftName, 'flight-start', { flight: currentLifter?.flight });
+          }
         }
       }
       ts.lastFlightLift = flightLiftKey;
@@ -498,7 +525,8 @@ function checkPlatforms(meetId) {
       }
     }
 
-    // --- Email notifications at various positions ---
+    // --- Email notifications at various positions (skip for stale/completed meets) ---
+    if (stale) continue;
 
     // "lifting" — current lifter
     if (currentLifter?.name && !ts.notifiedLifting.has(currentName)) {
@@ -934,16 +962,26 @@ async function pollForNewMeets() {
           watchChanges(mid);
         }
       }
-      // Send recap emails for stale meets that have subscribers
+      // Send recap emails for stale meets that have subscribers, then clean up subscriptions
       const subMeetIds = new Set(meetIds);
       for (const mid of [...watchingMeets]) {
         if (isMeetStale(mid) && subMeetIds.has(mid)) {
-          sendMeetRecaps(mid).catch(err => console.error(`[RECAP ERROR] ${err.message}`));
+          try {
+            await sendMeetRecaps(mid);
+            // After recaps sent, delete meet-specific subscriptions so the changes feed
+            // gets cleaned up next cycle (persistent subs remain for future auto-subscribe)
+            const deleted = await deleteSubscriptionsForMeet(mid);
+            if (deleted > 0) {
+              console.log(`[CLEANUP] Deleted ${deleted} subscriptions for stale meet ${mid} — persistent subs preserved`);
+              delete subsCache[mid]; // invalidate cache
+            }
+          } catch (err) {
+            console.error(`[RECAP ERROR] ${err.message}`);
+          }
         }
       }
 
       // Clean up stale meets — stop changes feeds and remove from index
-      // (keeps subscribed meets that still have active subs, even if stale)
       for (const mid of [...watchingMeets]) {
         if (isMeetStale(mid) && !subMeetIds.has(mid)) {
           console.log(`[CLEANUP] Stopping changes feed for stale meet ${mid} ("${getMeetState(mid).meet?.name}")`);
@@ -2626,21 +2664,24 @@ function renderScoreboard(data) {
   let lastGender = null;
   const totalColCount = 3 + attemptCols.length + 3;
 
+  const showGroupSeparators = currentSort === 'wc';
   const rows = lifters.map(l => {
     let sep = '';
-    // Gender separator (Men / Women)
-    const g = l.gender && /^f/i.test(l.gender) ? 'F' : 'M';
-    if (g !== lastGender) {
-      lastGender = g;
-      lastWc = null; // reset wc when gender changes
-      const gLabel = g === 'F' ? 'WOMEN' : 'MEN';
-      sep += '<tr class="gender-separator"><td colspan="' + totalColCount + '">' + gLabel + '</td></tr>';
-    }
-    // Weight class separator
-    if (l.weightClass !== lastWc) {
-      lastWc = l.weightClass;
-      const wcLabel = l.weightClass ? (typeof l.weightClass === 'number' ? l.weightClass + ' kg' : l.weightClass) : 'Unknown';
-      sep += '<tr class="wc-separator"><td colspan="' + totalColCount + '">' + wcLabel + '</td></tr>';
+    if (showGroupSeparators) {
+      // Gender separator (Men / Women)
+      const g = l.gender && /^f/i.test(l.gender) ? 'F' : 'M';
+      if (g !== lastGender) {
+        lastGender = g;
+        lastWc = null; // reset wc when gender changes
+        const gLabel = g === 'F' ? 'WOMEN' : 'MEN';
+        sep += '<tr class="gender-separator"><td colspan="' + totalColCount + '">' + gLabel + '</td></tr>';
+      }
+      // Weight class separator
+      if (l.weightClass !== lastWc) {
+        lastWc = l.weightClass;
+        const wcLabel = l.weightClass ? (typeof l.weightClass === 'number' ? l.weightClass + ' kg' : l.weightClass) : 'Unknown';
+        sep += '<tr class="wc-separator"><td colspan="' + totalColCount + '">' + wcLabel + '</td></tr>';
+      }
     }
 
     const bombed = isBombedOut(l);
@@ -2952,16 +2993,22 @@ function recapHTML(meetId, meetName, videoId, streamStart, timestamps, meetDate)
       timeStr = fmtOffset(offset);
       link = `https://youtube.com/watch?v=${videoId}&t=${offset}`;
     }
-    byLifter[t.lifter_id].cells[key] = { weight: t.weight, link, timeStr };
+    byLifter[t.lifter_id].cells[key] = { weight: t.weight, link, timeStr, result: t.result || null };
     if (wallEpoch < byLifter[t.lifter_id].earliest) byLifter[t.lifter_id].earliest = wallEpoch;
     if (t.body_weight && !byLifter[t.lifter_id].bodyWeight) byLifter[t.lifter_id].bodyWeight = Number(t.body_weight);
   }
 
-  // Compute total per lifter (max weight per lift type)
+  // Compute total per lifter (best good lift per lift type — only completed attempts)
   for (const l of Object.values(byLifter)) {
-    const bestSq = Math.max(0, ...['sq1','sq2','sq3'].map(k => Number(l.cells[k]?.weight) || 0));
-    const bestBp = Math.max(0, ...['bp1','bp2','bp3'].map(k => Number(l.cells[k]?.weight) || 0));
-    const bestDl = Math.max(0, ...['dl1','dl2','dl3'].map(k => Number(l.cells[k]?.weight) || 0));
+    const bestGood = (keys) => Math.max(0, ...keys.map(k => {
+      const c = l.cells[k];
+      if (!c || !c.weight) return 0;
+      if (c.result !== 'good') return 0;
+      return Number(c.weight) || 0;
+    }));
+    const bestSq = bestGood(['sq1','sq2','sq3']);
+    const bestBp = bestGood(['bp1','bp2','bp3']);
+    const bestDl = bestGood(['dl1','dl2','dl3']);
     l.total = bestSq + bestBp + bestDl;
   }
 
@@ -2972,6 +3019,14 @@ function recapHTML(meetId, meetName, videoId, streamStart, timestamps, meetDate)
     if (wcA !== wcB) return wcA - wcB;
     return (b.total || 0) - (a.total || 0);
   });
+
+  // Compute rankings within each weight class
+  let rankWc = null, rank = 0;
+  for (const l of lifters) {
+    const wc = getWeightClass(l.bodyWeight, null, null);
+    if (wc !== rankWc) { rankWc = wc; rank = 1; } else { rank++; }
+    l.rank = l.total > 0 ? rank : null;
+  }
 
   // Detect which column groups are present
   const hasSq = lifters.some(l => COLS.slice(0, 3).some(c => l.cells[c]));
@@ -3007,19 +3062,21 @@ function recapHTML(meetId, meetName, videoId, streamStart, timestamps, meetDate)
       const wcLabel = wc ? `${wc} kg` : 'Unknown';
       separator = `<tr class="wc-separator"><td colspan="${totalCols}" style="padding:0.6rem 0.75rem 0.3rem;font-size:0.7rem;color:#DC2626;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;border-bottom:2px solid #252525;background:#0F0F0F;">${wcLabel}</td></tr>`;
     }
+    const rankLabel = l.rank ? `<span style="color:#DC2626;font-size:0.72rem;font-weight:600;margin-right:0.3rem;">#${l.rank}</span>` : '';
     const bwLabel = l.bodyWeight ? `<span style="color:#555;font-size:0.72rem;font-weight:300;"> ${l.bodyWeight}</span>` : '';
     const cells = activeCols.map(c => {
       const cell = l.cells[c];
       if (!cell) return '<td class="cell empty">&mdash;</td>';
       const w = cell.weight ? cell.weight : '?';
+      const resultCls = cell.result === 'good' ? ' good' : cell.result === 'bad' ? ' miss' : '';
       if (cell.link) {
-        return `<td class="cell"><a href="${escHtml(cell.link)}" target="_blank" title="${cell.timeStr}">${w}</a></td>`;
+        return `<td class="cell${resultCls}"><a href="${escHtml(cell.link)}" target="_blank" title="${cell.timeStr}">${w}</a></td>`;
       }
-      return `<td class="cell">${w}</td>`;
+      return `<td class="cell${resultCls}">${w}</td>`;
     }).join('');
     const totalCell = l.total ? `<td class="cell" style="font-weight:600;color:#F0F0F0;">${l.total}</td>` : '<td class="cell empty">&mdash;</td>';
     return `${separator}<tr class="lifter-row" data-name="${escHtml(l.name.toLowerCase())}" data-wc="${wc || ''}">
-      <td class="lifter-name"><a href="https://www.openpowerlifting.org/u/${escHtml(l.name.toLowerCase().replace(/[^a-z]/g, ''))}" target="_blank" style="color:inherit;text-decoration:none;">${escHtml(l.name)}</a>${bwLabel}</td>
+      <td class="lifter-name">${rankLabel}<a href="https://www.openpowerlifting.org/u/${escHtml(l.name.toLowerCase().replace(/[^a-z]/g, ''))}" target="_blank" style="color:inherit;text-decoration:none;">${escHtml(l.name)}</a>${bwLabel}</td>
       ${cells}
       ${totalCell}
     </tr>`;
@@ -3056,6 +3113,10 @@ ${FONT_LINKS}
   }
   .scoresheet .cell a:hover { background: #DC2626; color: #fff; border-bottom-color: transparent; }
   .scoresheet .cell.empty { color: #333; }
+  .scoresheet .cell.good { color: #4ade80; }
+  .scoresheet .cell.good a { color: #4ade80; border-bottom-color: #4ade80; }
+  .scoresheet .cell.miss { color: #ef4444; text-decoration: line-through; }
+  .scoresheet .cell.miss a { color: #ef4444; border-bottom-color: #ef4444; text-decoration: line-through; }
   .scoresheet .lifter-row:hover td { background: #141414; }
   .scoresheet .lifter-row:hover .lifter-name { background: #141414; }
   .table-outer { position: relative; }
