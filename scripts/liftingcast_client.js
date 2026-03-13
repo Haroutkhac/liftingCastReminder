@@ -1690,7 +1690,7 @@ function meetsHTML(meetList, subscribedMeetIds) {
     }
 
     const liveLink = isLive
-      ? `<div style="margin-top:0.5rem;"><a href="/live/${escHtml(m.id)}" class="watch-live-link" onclick="event.stopPropagation();" style="color:#22C55E;font-size:0.82rem;font-weight:600;">WATCH LIVE &rarr;</a></div>`
+      ? `<div style="margin-top:0.5rem;"><a href="/meets/${escHtml(m.id)}" class="watch-live-link" onclick="event.stopPropagation();" style="color:#22C55E;font-size:0.82rem;font-weight:600;">WATCH LIVE &rarr;</a></div>`
       : '';
 
     return `<div class="meet-card" style="border-color:${borderColor};cursor:pointer;" onclick="window.location='/meets/${escHtml(m.id)}'" data-name="${escHtml(m.name.toLowerCase())}" data-lifters="${escHtml((m.lifterNames || []).join('|').toLowerCase())}" data-lifters-display="${escHtml((m.lifterNames || []).join('|'))}">
@@ -1808,298 +1808,10 @@ function searchMeets(q) {
 </body></html>`;
 }
 
-// --- Meet detail page (scoresheet table like recaps) ---
-function meetDetailHTML(meetId, meetState, subscribedLifterNames, videoData, timestamps) {
-  const subNameSet = new Set((subscribedLifterNames || []).map(n => n.toLowerCase()));
-  const meetDoc = meetState.meet || {};
-  const meetName = meetDoc.name || meetId;
-  const dateStr = meetDoc.date || '';
-  const locationStr = meetDoc.location || meetDoc.city || '';
-  const meta = [dateStr, locationStr].filter(Boolean).map(s => escHtml(s)).join(' &middot; ');
 
-  // Build VOD timestamp lookup: lifterId+liftName → best (highest weight) timestamp link
-  const LIFT_KEY_MAP = { squat: 'sq', bench: 'bp', dead: 'dl', deadlift: 'dl' };
-  const vodLinks = {}; // key: `${lifterName.toLowerCase()}:${sq|bp|dl}` → YouTube URL
-  if (videoData && timestamps && timestamps.length > 0) {
-    const streamStart = Number(videoData.stream_start_epoch);
-    const videoId = videoData.youtube_video_id;
-    if (streamStart > 0) {
-      // Group timestamps by lifter+lift, pick the highest weight attempt
-      const bestByLifterLift = {};
-      for (const t of timestamps) {
-        const liftKey = LIFT_KEY_MAP[t.lift_name] || t.lift_name;
-        const key = `${t.lifter_name.toLowerCase()}:${liftKey}`;
-        const w = Number(t.weight) || 0;
-        if (!bestByLifterLift[key] || w > bestByLifterLift[key].weight) {
-          bestByLifterLift[key] = { weight: w, wallEpoch: Math.floor(new Date(t.wall_clock_time).getTime() / 1000) };
-        }
-      }
-      for (const [key, val] of Object.entries(bestByLifterLift)) {
-        const offset = Math.max(0, val.wallEpoch - streamStart - TIMESTAMP_LEAD_SECONDS);
-        vodLinks[key] = `https://youtube.com/watch?v=${videoId}&t=${offset}`;
-      }
-    }
-  }
-
-  // Build lifter rows with all 9 attempts (3 per lift)
-  const lifters = Object.values(meetState.lifters).filter(l => l.name).map(l => {
-    const nameLower = (l.name || '').toLowerCase();
-    // Gather all attempts for this lifter: { sq1, sq2, sq3, bp1, bp2, bp3, dl1, dl2, dl3 }
-    const attemptMap = {};
-    const LIFT_SHORT = { squat: 'sq', bench: 'bp', dead: 'dl', deadlift: 'dl' };
-    for (const attempt of Object.values(meetState.attempts)) {
-      if (attempt.lifterId !== l._id) continue;
-      const liftShort = LIFT_SHORT[attempt.liftName];
-      if (!liftShort) continue;
-      const key = `${liftShort}${attempt.attemptNumber}`;
-      attemptMap[key] = { weight: attempt.weight || null, result: attempt.result || null };
-    }
-    // Compute best lifts and total
-    const bests = computeLifterBests(meetState, l._id);
-    const total = bests.squat + bests.bench + bests.dead;
-    return {
-      id: l._id,
-      name: l.name,
-      bodyWeight: l.bodyWeight || null,
-      weightClass: getWeightClass(l.bodyWeight, l.gender, l.declaredWeightClass),
-      flight: l.flight || '',
-      session: l.session || 1,
-      team: l.team || '',
-      attempts: attemptMap,
-      bestSq: bests.squat || null,
-      bestBp: bests.bench || null,
-      bestDl: bests.dead || null,
-      total: total || null,
-      isSubscribed: subNameSet.has(nameLower),
-      vodSq: vodLinks[`${nameLower}:sq`] || null,
-      vodBp: vodLinks[`${nameLower}:bp`] || null,
-      vodDl: vodLinks[`${nameLower}:dl`] || null,
-    };
-  });
-
-  // Sort by weight class asc, then body weight asc, then name
-  lifters.sort((a, b) => {
-    const wcA = typeof a.weightClass === 'number' ? a.weightClass : 9999;
-    const wcB = typeof b.weightClass === 'number' ? b.weightClass : 9999;
-    if (wcA !== wcB) return wcA - wcB;
-    const bwA = a.bodyWeight || 9999;
-    const bwB = b.bodyWeight || 9999;
-    if (bwA !== bwB) return bwA - bwB;
-    return a.name.localeCompare(b.name);
-  });
-
-  // Platform status summary
-  const platformStatuses = Object.entries(meetState.platforms).map(([pid, platform]) => {
-    const parsed = parseAttemptId(platform.currentAttemptId);
-    const currentLifter = parsed ? meetState.lifters[parsed.lifterId] : null;
-    const currentAttempt = platform.currentAttemptId ? meetState.attempts[platform.currentAttemptId] : null;
-    const order = computeAttemptOrder(meetState, pid);
-    const currentIdx = platform.currentAttemptId ? order.findIndex(a => a.attemptId === platform.currentAttemptId) : -1;
-    const nextUp = currentIdx >= 0 ? order.slice(currentIdx + 1, currentIdx + 3) : [];
-    return {
-      name: platform.name || pid,
-      currentLifter: currentLifter?.name || null,
-      liftName: parsed?.liftName || null,
-      attemptNumber: parsed?.attemptNumber || null,
-      currentWeight: currentAttempt?.weight || null,
-      nextUp: nextUp.map(a => ({ name: a.lifterName, lift: a.liftName, attempt: a.attemptNumber })),
-    };
-  });
-
-  const platformHTML = platformStatuses.map(p => {
-    if (!p.currentLifter) return '';
-    const liftLabel = { squat: 'SQ', bench: 'BP', dead: 'DL', deadlift: 'DL' }[p.liftName] || p.liftName || '';
-    const weightStr = p.currentWeight ? `<div style="font-size:1.3rem;font-weight:700;color:#DC2626;margin-top:0.15rem;">${p.currentWeight} kg</div>` : '';
-    const nowLiftingCard = `<div class="platform-status" style="flex:1;min-width:0;">
-      <div style="font-size:0.68rem;color:#666;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.2rem;">Now lifting</div>
-      <div><strong style="color:#F0F0F0;font-size:1rem;">${escHtml(p.currentLifter)}</strong> <span style="color:#666;">&mdash; ${liftLabel} attempt ${p.attemptNumber || ''}</span></div>
-      ${weightStr}
-    </div>`;
-    if (p.nextUp.length === 0) {
-      return `<div class="platform-row">${nowLiftingCard}</div>`;
-    }
-    const nextLabels = p.nextUp.map((n, i) => {
-      const label = i === 0 ? 'On deck' : 'In hole';
-      const nLift = { squat: 'SQ', bench: 'BP', dead: 'DL', deadlift: 'DL' }[n.lift] || '';
-      return `<div style="color:#777;margin-bottom:0.3rem;">${label}: <span style="color:#999;">${escHtml(n.name)}</span> <span style="color:#555;">${nLift}${n.attempt}</span></div>`;
-    }).join('');
-    const orderCard = `<div class="platform-status" style="flex:1;min-width:0;">
-      <div style="font-size:0.68rem;color:#666;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.2rem;">Up next</div>
-      <div style="font-size:0.82rem;">${nextLabels}</div>
-    </div>`;
-    return `<div class="platform-row">${nowLiftingCard}${orderCard}</div>`;
-  }).filter(Boolean).join('');
-
-  // Detect which lift groups have any attempt data
-  const attemptKeys = ['sq1','sq2','sq3','bp1','bp2','bp3','dl1','dl2','dl3'];
-  const hasSq = lifters.some(l => l.attempts.sq1 || l.attempts.sq2 || l.attempts.sq3);
-  const hasBp = lifters.some(l => l.attempts.bp1 || l.attempts.bp2 || l.attempts.bp3);
-  const hasDl = lifters.some(l => l.attempts.dl1 || l.attempts.dl2 || l.attempts.dl3);
-  const hasTotal = lifters.some(l => l.total);
-
-  // Build attempt columns: 3 per lift group + total
-  const attemptCols = [];
-  if (hasSq) { attemptCols.push({ key: 'sq1', group: 'sq' }, { key: 'sq2', group: 'sq' }, { key: 'sq3', group: 'sq', isLast: true }); }
-  if (hasBp) { attemptCols.push({ key: 'bp1', group: 'bp' }, { key: 'bp2', group: 'bp' }, { key: 'bp3', group: 'bp', isLast: true }); }
-  if (hasDl) { attemptCols.push({ key: 'dl1', group: 'dl' }, { key: 'dl2', group: 'dl' }, { key: 'dl3', group: 'dl', isLast: true }); }
-  if (hasTotal) { attemptCols.push({ key: 'total', group: 'total', isBest: true }); }
-
-  // Group header row (SQUAT spans 4, BENCH spans 4, DEADLIFT spans 4, TOT spans 1)
-  const groupLabels = { sq: 'SQUAT', bp: 'BENCH', dl: 'DEADLIFT', total: 'TOTAL' };
-  const groupSpans = {};
-  for (const c of attemptCols) {
-    groupSpans[c.group] = (groupSpans[c.group] || 0) + 1;
-  }
-  const groupHeaderCells = Object.entries(groupSpans).map(([grp, span]) =>
-    `<th colspan="${span}" style="text-align:center;padding:0.25rem 0.2rem;font-size:0.6rem;color:#666;letter-spacing:0.08em;border-bottom:1px solid #252525;${grp !== 'total' ? 'border-right:2px solid #252525;' : ''}">${groupLabels[grp]}</th>`
-  ).join('');
-
-  // Sub-header row (1, 2, 3 for each group, TOT for total)
-  const subHeaderCells = attemptCols.map(c => {
-    const label = c.isBest ? 'TOT' : c.key.slice(-1);
-    const borderR = (c.isLast || c.isBest) && c.group !== 'total' ? 'border-right:2px solid #252525;' : '';
-    const style = c.isBest ? `font-weight:600;color:#AAA;${borderR}` : borderR;
-    return `<th style="text-align:center;min-width:42px;padding:0.25rem 0.15rem;font-size:0.6rem;border-bottom:2px solid #252525;${style}">${label}</th>`;
-  }).join('');
-
-  // Build body rows with weight class separators
-  const totalCols = attemptCols.length + 1; // +1 for lifter name col
-  let lastWc = null;
-  const bodyRows = lifters.map(l => {
-    let separator = '';
-    if (l.weightClass !== lastWc) {
-      lastWc = l.weightClass;
-      const wcLabel = l.weightClass ? (typeof l.weightClass === 'number' ? `${l.weightClass} kg` : l.weightClass) : 'Unknown';
-      separator = `<tr class="wc-separator"><td colspan="${totalCols}" style="padding:0.6rem 0.75rem 0.3rem;font-size:0.7rem;color:#DC2626;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;border-bottom:2px solid #252525;background:#0F0F0F;">${wcLabel}</td></tr>`;
-    }
-    const bwLabel = l.bodyWeight ? `<span style="color:#555;font-size:0.72rem;font-weight:300;"> ${l.bodyWeight}</span>` : '';
-    const subHighlight = l.isSubscribed ? ' style="color:#DC2626;"' : '';
-    const cells = attemptCols.map(c => {
-      const borderR = (c.isLast || c.isBest) && c.group !== 'total' ? 'border-right:2px solid #252525;' : '';
-      // Total column
-      if (c.isBest) {
-        const val = l[c.key];
-        if (!val) return `<td class="cell empty">&mdash;</td>`;
-        return `<td class="cell" style="font-weight:600;color:#F0F0F0;">${val}</td>`;
-      }
-      // Individual attempt columns
-      const att = l.attempts[c.key];
-      if (!att || att.weight == null) return `<td class="cell empty" style="${borderR}">&mdash;</td>`;
-      const w = att.weight;
-      if (att.result === 'good') {
-        return `<td class="cell" style="color:#22C55E;${borderR}">${w}</td>`;
-      } else if (att.result === 'bad') {
-        return `<td class="cell" style="color:#EF4444;text-decoration:line-through;text-decoration-color:#EF4444;${borderR}">${w}</td>`;
-      }
-      // Pending (nominated but not yet attempted)
-      return `<td class="cell" style="color:#555;${borderR}">${w}</td>`;
-    }).join('');
-    return `${separator}<tr class="lifter-row" data-name="${escHtml(l.name.toLowerCase())}" data-wc="${l.weightClass || ''}">
-      <td class="lifter-name"><a href="https://www.openpowerlifting.org/u/${encodeURIComponent(l.name.toLowerCase().replace(/[^a-z]/g, ''))}" target="_blank"${subHighlight ? ` style="color:#DC2626;"` : ''}>${escHtml(l.name)}</a>${bwLabel}</td>
-      ${cells}
-    </tr>`;
-  }).join('');
-
-  const liftingStarted = hasSq || hasBp || hasDl;
-
+function meetPageHTML(meetId, meetName, isLive) {
   return `<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${escHtml(meetName)} - LiftAlert</title>
-${FONT_LINKS}
-<style>
-  ${SHARED_STYLES}
-  body { padding: 1.5rem 0.75rem; }
-  .container { max-width: 1100px; margin: 0 auto; }
-  .nav { margin-bottom: 1.5rem; font-size: 0.85rem; }
-  .nav a { color: #777; }
-  .nav a:hover { color: #F0F0F0; }
-  .page-heading { font-family: 'Bebas Neue', sans-serif; font-size: 1.75rem; letter-spacing: 0.06em; margin-bottom: 0.25rem; }
-  .platform-row { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
-  .platform-status { padding: 0.65rem 0.85rem; background: #0D0D0D; border: 1px solid #1F1F1F; border-radius: 8px; }
-  .filter-input { width: 100%; max-width: 300px; padding: 0.5rem 0.75rem; border-radius: 8px; border: 1px solid #252525; background: #0D0D0D; color: #F0F0F0; font-size: 0.85rem; font-family: 'Outfit', sans-serif; margin-bottom: 1rem; }
-  .filter-input:focus { outline: none; border-color: #DC2626; box-shadow: 0 0 0 3px rgba(220,38,38,0.1); }
-  .scoresheet { width: 100%; border-collapse: collapse; }
-  .scoresheet th { position: sticky; background: #0A0A0A; z-index: 2; }
-  .scoresheet thead tr:first-child th { top: 0; }
-  .scoresheet thead tr:nth-child(2) th { top: 1.4rem; }
-  .scoresheet .lifter-name {
-    position: sticky; left: 0; background: #0A0A0A; z-index: 3;
-    padding: 0.45rem 0.6rem; white-space: nowrap; font-weight: 500; font-size: 0.82rem;
-    border-bottom: 1px solid #1A1A1A; border-right: 2px solid #252525;
-    max-width: 160px; overflow: hidden; text-overflow: ellipsis;
-  }
-  .scoresheet .lifter-name a { color: #F0F0F0; text-decoration: none; }
-  .scoresheet .lifter-name a:hover { text-decoration: underline; text-underline-offset: 2px; }
-  .scoresheet .cell { text-align: center; padding: 0.4rem 0.15rem; border-bottom: 1px solid #1A1A1A; font-size: 0.78rem; color: #BBB; white-space: nowrap; }
-  .scoresheet .cell.empty { color: #333; }
-  .scoresheet .lifter-row:hover td { background: #141414; }
-  .scoresheet .lifter-row:hover .lifter-name { background: #141414; }
-  .table-wrap { overflow-x: auto; border: 1px solid #1F1F1F; border-radius: 12px; background: #0A0A0A; }
-  .empty-state { text-align: center; padding: 3rem 1rem; color: #555; }
-  .empty-state p { margin-bottom: 0.5rem; }
-  .subscribe-link { display: inline-block; margin-top: 1rem; padding: 0.6rem 1.5rem; background: #DC2626; color: white; border-radius: 8px; font-family: 'Bebas Neue', sans-serif; font-size: 1rem; letter-spacing: 0.1em; transition: background 0.2s; }
-  .subscribe-link:hover { background: #B91C1C; color: white; }
-  @media (max-width: 600px) {
-    .scoresheet .lifter-name { font-size: 0.7rem; padding: 0.35rem 0.4rem; max-width: 100px; }
-    .scoresheet .cell { padding: 0.3rem 0.1rem; font-size: 0.65rem; }
-  }
-</style>
-</head><body><div class="container animate-in">
-  <div class="home-logo"><a href="/"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
-  <div class="page-heading">${escHtml(meetName)}</div>
-  ${meta ? `<p class="subtitle" style="margin-bottom:0.5rem;">${meta}</p>` : ''}
-  <p style="font-size:0.85rem;color:#555;margin-bottom:1rem;">${lifters.length} lifter${lifters.length !== 1 ? 's' : ''} &middot; ${Object.keys(meetState.platforms).length} platform${Object.keys(meetState.platforms).length !== 1 ? 's' : ''}${watchingMeets.has(meetId) && meetState.lastChangeTime > 0 && (Date.now() - meetState.lastChangeTime) < 30 * 60 * 1000 ? ` &middot; <a href="/live/${escHtml(meetId)}" style="color:#22C55E;font-weight:600;">LIVE SCOREBOARD &rarr;</a>` : ''}</p>
-  ${platformHTML ? `<div style="margin-bottom:1rem;">${platformHTML}</div>` : ''}
-  ${!liftingStarted ? '<p style="font-size:0.82rem;color:#555;margin-bottom:1rem;">Lifting hasn\'t started yet &mdash; results will appear as attempts are recorded.</p>' : ''}
-  <input type="text" class="filter-input" placeholder="Search lifters..." oninput="filterLifters(this.value)">
-  <div class="table-wrap">
-    <table class="scoresheet">
-      <thead>
-        <tr><th rowspan="2" style="text-align:left;padding:0.35rem 0.6rem;font-size:0.65rem;border-bottom:2px solid #252525;border-right:2px solid #252525;">LIFTER</th>${groupHeaderCells}</tr>
-        <tr>${subHeaderCells}</tr>
-      </thead>
-      <tbody>${bodyRows}</tbody>
-    </table>
-  </div>
-  <div style="text-align:center;margin-top:1.5rem;">
-    <a href="/" class="subscribe-link">SUBSCRIBE TO A LIFTER</a>
-  </div>
-</div>
-<script>
-// Auto-redirect with email from localStorage if not already in URL
-(function() {
-  try {
-    var email = new URLSearchParams(window.location.search).get('email');
-    if (!email) {
-      var saved = localStorage.getItem('liftalert_email');
-      if (saved) {
-        window.location.replace(window.location.pathname + '?email=' + encodeURIComponent(saved));
-        return;
-      }
-    }
-  } catch(e) {}
-})();
-function filterLifters(q) {
-  const rows = document.querySelectorAll('.lifter-row');
-  const seps = document.querySelectorAll('.wc-separator');
-  const lower = q.toLowerCase();
-  const visibleWcs = new Set();
-  rows.forEach(r => {
-    const show = r.dataset.name.includes(lower);
-    r.style.display = show ? '' : 'none';
-    if (show && r.dataset.wc) visibleWcs.add(r.dataset.wc);
-  });
-  seps.forEach(s => {
-    const wcText = s.textContent.trim().replace(' kg','');
-    s.style.display = (!lower || visibleWcs.has(wcText)) ? '' : 'none';
-  });
-}
-</script>
-</body></html>`;
-}
-
-function liveHTML(meetId, meetName) {
-  return `<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${escHtml(meetName)} LIVE - LiftAlert</title>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${escHtml(meetName)}${isLive ? ' LIVE' : ''} - LiftAlert</title>
 ${FONT_LINKS}
 <style>
   ${SHARED_STYLES}
@@ -2179,7 +1891,7 @@ ${FONT_LINKS}
   /* Attempt cells — no more BEST columns, best lift is color-coded directly */
   .att { font-size: 0.78rem; font-variant-numeric: tabular-nums; min-width: 44px; }
   .att.good { color: #4ADE80; }
-  .att.good-best { color: #F0F0F0; font-weight: 700; background: rgba(74,222,128,0.1); }
+  .att.good-best { color: #4ADE80; }
   .att.miss { color: #EF4444; text-decoration: line-through; opacity: 0.7; }
   .att.open { color: #777; font-style: italic; }
   .att.current-att { color: #FBBF24; font-weight: 700; background: rgba(251,191,36,0.1); animation: pulse 1.5s infinite; }
@@ -2266,9 +1978,10 @@ ${FONT_LINKS}
     <div class="home-logo" style="margin-bottom:0;"><a href="/"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
     <div id="yt-link-wrap"></div>
   </div>
-  <div class="page-heading">${escHtml(meetName)} <span id="live-indicator" class="live-badge"><span class="pulse-dot"></span>LIVE</span></div>
+  <div class="page-heading">${escHtml(meetName)} <span id="live-indicator" class="${isLive ? 'live-badge' : 'not-live-badge'}">${isLive ? '<span class="pulse-dot"></span>LIVE' : 'COMPLETED'}</span></div>
   <div id="meet-meta" class="meet-meta"></div>
-  <div class="hero-queue-row">
+  <div id="ended-banner" style="display:none;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);border-radius:8px;padding:0.5rem 0.75rem;margin-bottom:0.75rem;font-size:0.78rem;color:#22C55E;">Meet ended &mdash; showing final results</div>
+  <div id="hero-queue-row" class="hero-queue-row" style="${isLive ? '' : 'display:none;'}">
     <div id="hero" class="hero"><div class="empty-state">Loading...</div></div>
     <div id="queue" class="queue-section"></div>
   </div>
@@ -2282,8 +1995,8 @@ ${FONT_LINKS}
     <div class="controls-right">
       <select id="sort-by" class="filter-select">
         <option value="order">Sort: Attempt Order</option>
-        <option value="wc">Sort: Weight Class</option>
-        <option value="total" selected>Sort: Total</option>
+        <option value="wc" selected>Sort: Weight Class</option>
+        <option value="total">Sort: Total</option>
         <option value="name">Sort: Name</option>
       </select>
       <button id="hypo-btn" class="hypo-btn">What If?</button>
@@ -2303,10 +2016,26 @@ ${FONT_LINKS}
 </div>
 <script>
 const MEET_ID = '${escHtml(meetId)}';
+const INITIAL_IS_LIVE = ${isLive ? 'true' : 'false'};
+let wasLive = INITIAL_IS_LIVE;
 const LIFT_LABEL = { squat: 'SQ', bench: 'BP', dead: 'DL', deadlift: 'DL' };
 let lastData = null;
 let currentFilters = { search: '', session: '', flight: '', wc: '', platform: '' };
-let currentSort = 'total';
+let currentSort = 'wc';
+
+// Extract email from URL or localStorage for API calls
+const EMAIL = (function() {
+  try {
+    var e = new URLSearchParams(window.location.search).get('email');
+    if (!e) {
+      e = localStorage.getItem('liftalert_email') || '';
+      if (e) {
+        window.history.replaceState(null, '', window.location.pathname + '?email=' + encodeURIComponent(e));
+      }
+    }
+    return e;
+  } catch(ex) { return ''; }
+})();
 
 
 
@@ -2430,6 +2159,18 @@ function bestAttemptKey(atts, prefix) {
 function renderHero(data) {
   const el = document.getElementById('hero');
   const indicator = document.getElementById('live-indicator');
+  const heroRow = document.getElementById('hero-queue-row');
+  const isLiveNow = data.isLive !== undefined ? data.isLive : data.platforms && data.platforms.some(p => p.current);
+
+  if (!isLiveNow) {
+    // Not live — hide hero/queue, show completed badge
+    heroRow.style.display = 'none';
+    indicator.className = 'not-live-badge';
+    indicator.innerHTML = 'COMPLETED';
+    return;
+  }
+
+  heroRow.style.display = '';
   if (!data.platforms || data.platforms.length === 0) {
     el.innerHTML = '<div class="empty-state">Waiting for meet to start...</div>';
     return;
@@ -2688,8 +2429,10 @@ function renderScoreboard(data) {
     const rowClass = (l.isCurrent ? 'current-lifter ' : '') + (bombed ? 'bombed-out ' : '');
     let row = '<tr class="' + rowClass.trim() + '" data-id="' + esc(l.id || '') + '" data-name="' + esc(l.name.toLowerCase()) + '">';
 
-    // Name
-    row += '<td class="col-name"><a href="' + opLink(l.name) + '" target="_blank">' + esc(l.name) + '</a>';
+    // Name (with subscription highlighting)
+    const _isSub = data.subscribedLifterNames && data.subscribedLifterNames.length > 0 && data.subscribedLifterNames.some(n => n.toLowerCase() === l.name.toLowerCase());
+    const _nameStyle = _isSub ? ' style="color:#DC2626;"' : '';
+    row += '<td class="col-name"><a href="' + opLink(l.name) + '" target="_blank"' + _nameStyle + '>' + esc(l.name) + '</a>';
     if (l.team) row += ' <span style="color:#555;font-size:0.62rem;">' + esc(l.team) + '</span>';
     if (l.division) row += '<br><span style="color:#666;font-size:0.58rem;font-weight:400;">' + esc(l.division) + '</span>';
     row += '</td>';
@@ -2732,6 +2475,14 @@ function renderScoreboard(data) {
         } else if (a.result === 'good') {
           cls += bestKeys.has(key) ? ' good-best' : ' good';
           content = String(a.weight);
+          // Add VOD link on best attempt cells
+          if (bestKeys.has(key) && data.vodLinks) {
+            const _liftKey = key.slice(0, 2);
+            const _vodKey = l.name.toLowerCase() + ':' + _liftKey;
+            if (data.vodLinks[_vodKey]) {
+              content += ' <a href="' + esc(data.vodLinks[_vodKey]) + '" target="_blank" style="color:#DC2626;text-decoration:none;font-size:0.65rem;" title="Watch attempt">&#x25B6;</a>';
+            }
+          }
         } else if (a.result === 'bad') {
           cls += ' miss';
           content = String(a.weight);
@@ -2920,7 +2671,9 @@ document.addEventListener('click', function(e) {
 
 async function poll() {
   try {
-    const res = await fetch('/api/meet/' + MEET_ID + '/live');
+    let apiUrl = '/api/meet/' + MEET_ID + '/live';
+    if (EMAIL) apiUrl += '?email=' + encodeURIComponent(EMAIL);
+    const res = await fetch(apiUrl);
     if (!res.ok) return;
     const data = await res.json();
     lastData = data;
@@ -2931,11 +2684,20 @@ async function poll() {
     renderScoreboard(data);
     renderYT(data);
     document.getElementById('updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+
+    // Handle live-to-done transition
+    if (wasLive && !data.isLive) {
+      document.getElementById('ended-banner').style.display = 'block';
+      document.getElementById('hero-queue-row').style.display = 'none';
+      clearInterval(pollInterval);
+      pollInterval = setInterval(poll, 60000);
+    }
+    wasLive = data.isLive;
   } catch (e) { /* retry next cycle */ }
 }
 
 poll();
-setInterval(poll, 5000);
+let pollInterval = setInterval(poll, INITIAL_IS_LIVE ? 5000 : 60000);
 
 // Keyboard shortcuts
 document.addEventListener('keydown', function(e) {
@@ -3012,12 +2774,13 @@ function recapHTML(meetId, meetName, videoId, streamStart, timestamps, meetDate)
     l.total = bestSq + bestBp + bestDl;
   }
 
-  // Sort by weight class (asc), then total (desc) within each weight class
+  // Sort by weight class (asc), then total (desc), then bodyweight (asc) as tiebreaker
   const lifters = Object.values(byLifter).sort((a, b) => {
     const wcA = getWeightClass(a.bodyWeight, null, null) || 9999;
     const wcB = getWeightClass(b.bodyWeight, null, null) || 9999;
     if (wcA !== wcB) return wcA - wcB;
-    return (b.total || 0) - (a.total || 0);
+    if ((b.total || 0) !== (a.total || 0)) return (b.total || 0) - (a.total || 0);
+    return (a.bodyWeight || 9999) - (b.bodyWeight || 9999);
   });
 
   // Compute rankings within each weight class
@@ -3737,35 +3500,31 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
 
   } else if (req.method === 'GET' && url.pathname.startsWith('/meets/')) {
     const detailMeetId = url.pathname.split('/')[2];
-    const email = url.searchParams.get('email') || '';
     if (!detailMeetId || !meets[detailMeetId]) {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('Meet not found');
     } else {
-      let subscribedLifterNames = [];
-      let videoData = null;
-      let timestamps = [];
-      const fetches = [];
-      if (email) {
-        fetches.push(
-          getSubscriptionsByEmail(email)
-            .then(subs => { subscribedLifterNames = subs.filter(s => s.meet_id === detailMeetId).map(s => s.lifter_name); })
-            .catch(err => console.error(`[MEET DETAIL] Error fetching subscriptions: ${err.message}`))
-        );
+      const st = meets[detailMeetId];
+      const meetName = st.meet?.name || detailMeetId;
+      // Compute isLive
+      let _detailHasLivePlatform = false;
+      for (const [_pid, _platform] of Object.entries(st.platforms)) {
+        const _cached = st.platformSummaryCache?.[_pid];
+        if (_cached?.currentLifter) { _detailHasLivePlatform = true; break; }
+        const _parsed = parseAttemptId(_platform.currentAttemptId);
+        if (_parsed) {
+          const _cl = st.lifters[_parsed.lifterId];
+          if (_cl) {
+            const _currentAttempt = st.attempts[_platform.currentAttemptId];
+            if (!_currentAttempt || !_currentAttempt.result) _detailHasLivePlatform = true;
+            break;
+          }
+        }
       }
-      fetches.push(
-        getMeetVideo(detailMeetId)
-          .then(v => { videoData = v; })
-          .catch(() => {})
-      );
-      fetches.push(
-        getAttemptTimestampsByMeet(detailMeetId)
-          .then(ts => { timestamps = ts; })
-          .catch(() => {})
-      );
-      await Promise.all(fetches);
+      const _detailRecentActivity = st.lastChangeTime > 0 && (Date.now() - st.lastChangeTime) < 30 * 60 * 1000;
+      const detailIsLive = _detailHasLivePlatform && _detailRecentActivity;
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(meetDetailHTML(detailMeetId, meets[detailMeetId], subscribedLifterNames, videoData, timestamps));
+      res.end(meetPageHTML(detailMeetId, meetName, detailIsLive));
     }
 
   } else if (req.method === 'GET' && url.pathname === '/api/lifters') {
@@ -3814,12 +3573,31 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
 
   } else if (req.method === 'GET' && url.pathname.match(/^\/api\/meet\/[^/]+\/live$/)) {
     const liveMeetId = url.pathname.split('/')[3];
+    const email = url.searchParams.get('email') || '';
     const st = meets[liveMeetId];
     if (!st) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Meet not found' }));
     } else {
       const meetDoc = st.meet || {};
+
+      // Compute isLive (same logic as meets list)
+      let _hasLivePlatform = false;
+      for (const [_pid, _platform] of Object.entries(st.platforms)) {
+        const _cached = st.platformSummaryCache?.[_pid];
+        if (_cached?.currentLifter) { _hasLivePlatform = true; break; }
+        const _parsed = parseAttemptId(_platform.currentAttemptId);
+        if (_parsed) {
+          const _cl = st.lifters[_parsed.lifterId];
+          if (_cl) {
+            const _currentAttempt = st.attempts[_platform.currentAttemptId];
+            if (!_currentAttempt || !_currentAttempt.result) _hasLivePlatform = true;
+            break;
+          }
+        }
+      }
+      const _recentActivity = st.lastChangeTime > 0 && (Date.now() - st.lastChangeTime) < 30 * 60 * 1000;
+      const isLive = _hasLivePlatform && _recentActivity;
       const platforms = Object.entries(st.platforms).map(([pid, platform]) => {
         const parsed = parseAttemptId(platform.currentAttemptId);
         const currentLifter = parsed ? st.lifters[parsed.lifterId] : null;
@@ -3966,12 +3744,56 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
         const ranked = group.filter(l => l.total > 0).sort((a, b) => b.total - a.total);
         ranked.forEach((l, i) => { l.place = i + 1; });
       }
+      // Fetch video, subscriptions, and timestamps in parallel
       let video = null;
-      try { video = await getMeetVideo(liveMeetId); } catch (e) { /* ignore */ }
+      let subscribedLifterNames = [];
+      let timestamps = [];
+      const apiFetches = [];
+      apiFetches.push(getMeetVideo(liveMeetId).then(v => { video = v; }).catch(() => {}));
+      if (email) {
+        apiFetches.push(
+          getSubscriptionsByEmail(email)
+            .then(subs => { subscribedLifterNames = subs.filter(s => s.meet_id === liveMeetId).map(s => s.lifter_name); })
+            .catch(() => {})
+        );
+      }
+      if (!isLive) {
+        apiFetches.push(
+          getAttemptTimestampsByMeet(liveMeetId).then(ts => { timestamps = ts; }).catch(() => {})
+        );
+      }
+      await Promise.all(apiFetches);
+
+      // Build VOD links when meet is not live and video exists
+      const LIFT_KEY_MAP = { squat: 'sq', bench: 'bp', dead: 'dl', deadlift: 'dl' };
+      const vodLinks = {};
+      if (!isLive && video && timestamps.length > 0) {
+        const streamStart = Number(video.stream_start_epoch);
+        const videoId = video.youtube_video_id;
+        if (streamStart > 0) {
+          const bestByLifterLift = {};
+          for (const t of timestamps) {
+            const liftKey = LIFT_KEY_MAP[t.lift_name] || t.lift_name;
+            const key = `${t.lifter_name.toLowerCase()}:${liftKey}`;
+            const w = Number(t.weight) || 0;
+            if (!bestByLifterLift[key] || w > bestByLifterLift[key].weight) {
+              bestByLifterLift[key] = { weight: w, wallEpoch: Math.floor(new Date(t.wall_clock_time).getTime() / 1000) };
+            }
+          }
+          for (const [key, val] of Object.entries(bestByLifterLift)) {
+            const offset = Math.max(0, val.wallEpoch - streamStart - TIMESTAMP_LEAD_SECONDS);
+            vodLinks[key] = `https://youtube.com/watch?v=${videoId}&t=${offset}`;
+          }
+        }
+      }
+
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         meet: { name: meetDoc.name || liveMeetId, date: meetDoc.date || '' },
         watching: watchingMeets.has(liveMeetId),
+        isLive,
+        subscribedLifterNames,
+        vodLinks,
         platforms,
         lifters,
         video: video ? { youtubeVideoId: video.youtube_video_id } : null,
@@ -3980,14 +3802,12 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
 
   } else if (req.method === 'GET' && url.pathname.match(/^\/live\/[^/]+$/)) {
     const liveMeetId = url.pathname.split('/')[2];
-    const st = meets[liveMeetId];
-    if (!st) {
+    if (!meets[liveMeetId]) {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('Meet not found');
     } else {
-      const meetName = st.meet?.name || liveMeetId;
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(liveHTML(liveMeetId, meetName));
+      res.writeHead(301, { Location: '/meets/' + liveMeetId + (url.search || '') });
+      res.end();
     }
 
   } else if (req.method === 'GET' && url.pathname.match(/^\/follow\/.+$/)) {
