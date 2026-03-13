@@ -1230,18 +1230,13 @@ const FORM_HTML = `<!DOCTYPE html>
   <div class="features animate-in" style="animation-delay:0.12s;">
     <a href="/meets" class="feature-card">
       <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49"/><path d="M7.76 16.24a6 6 0 0 1 0-8.49"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
-      <div class="feature-title">LIVE MEETS</div>
-      <div class="feature-desc">Browse &amp; track open meets</div>
+      <div class="feature-title">MEETS</div>
+      <div class="feature-desc">Live &amp; completed meets</div>
     </a>
     <a href="/my-subscriptions" class="feature-card">
       <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
       <div class="feature-title">MY ALERTS</div>
       <div class="feature-desc">Manage subscriptions</div>
-    </a>
-    <a href="/recaps" class="feature-card">
-      <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m10 9 5 3-5 3z" fill="currentColor"/></svg>
-      <div class="feature-title">RECAPS</div>
-      <div class="feature-desc">Relive meet highlights</div>
     </a>
   </div>
   <script>
@@ -3543,9 +3538,8 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
     res.end(JSON.stringify(results));
 
   } else if (req.method === 'GET' && url.pathname === '/recaps') {
-    const [recapMeets, lifterMap] = await Promise.all([getRecapMeets(), getRecapLifterNames()]);
-    res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end(recapListHTML(recapMeets, lifterMap));
+    res.writeHead(301, { Location: '/meets' });
+    res.end();
 
   } else if (req.method === 'GET' && url.pathname.startsWith('/recap/')) {
     const recapMeetId = url.pathname.split('/')[2];
