@@ -2614,7 +2614,8 @@ function renderScoreboard(data) {
 function renderYT(data) {
   const el = document.getElementById('yt-link-wrap');
   if (data.video && data.video.youtubeVideoId) {
-    el.innerHTML = '<p style="margin-bottom:1rem;"><a class="yt-link" href="https://youtube.com/watch?v=' + esc(data.video.youtubeVideoId) + '" target="_blank">&#x25B6; Watch on YouTube</a></p>';
+    const label = data.isLive ? 'Watch Stream' : 'Watch on YouTube';
+    el.innerHTML = '<a class="yt-link" href="https://youtube.com/watch?v=' + esc(data.video.youtubeVideoId) + '" target="_blank">&#x25B6; ' + label + '</a>';
   } else {
     el.innerHTML = '';
   }
@@ -3608,6 +3609,8 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
       }
       const _detailRecentActivity = st.lastChangeTime > 0 && (Date.now() - st.lastChangeTime) < 30 * 60 * 1000;
       const detailIsLive = _detailHasLivePlatform && _detailRecentActivity;
+      // Trigger YouTube auto-discovery (fire-and-forget, next poll picks it up)
+      autoLinkYouTubeVideo(detailMeetId, meetName, st.meet?.date || '').catch(() => {});
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(meetPageHTML(detailMeetId, meetName, detailIsLive));
     }
