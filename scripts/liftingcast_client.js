@@ -1694,8 +1694,9 @@ function meetsHTML(meetList, subscribedMeetIds) {
 
     // Past meets link to /recap/[id], active meets to /meets/[id]
     const cardLink = isPast ? `/recap/${escHtml(m.id)}` : `/meets/${escHtml(m.id)}`;
+    const category = isSub ? 'sub' : isLive ? 'live' : isPast ? 'past' : 'today';
 
-    return `<div class="meet-card" style="border-color:${borderColor};cursor:pointer;" onclick="window.location='${cardLink}'" data-name="${escHtml(m.name.toLowerCase())}" data-lifters="${escHtml((m.lifterNames || []).join('|').toLowerCase())}" data-lifters-display="${escHtml((m.lifterNames || []).join('|'))}">
+    return `<div class="meet-card" style="border-color:${borderColor};cursor:pointer;" onclick="window.location='${cardLink}'" data-name="${escHtml(m.name.toLowerCase())}" data-lifters="${escHtml((m.lifterNames || []).join('|').toLowerCase())}" data-lifters-display="${escHtml((m.lifterNames || []).join('|'))}" data-category="${category}"${m.hasVod ? ' data-has-vod="1"' : ''}>
       <div style="position:absolute;top:0;left:0;bottom:0;width:3px;background:${accentColor};"></div>
       <div class="meet-card-header">
         <h2 class="meet-card-title">${escHtml(m.name)}</h2>
@@ -1757,11 +1758,24 @@ ${FONT_LINKS}
   .matched-lifters { font-size: 0.8rem; color: #DC2626; margin-top: 0.5rem; line-height: 1.5; }
   .matched-lifters:empty { display: none; }
   .matched-lifters span { display: inline-block; background: #1A0A0A; border: 1px solid #3B1111; border-radius: 4px; padding: 0.1rem 0.4rem; margin: 0.15rem 0.2rem 0.15rem 0; font-size: 0.75rem; }
+  .filter-pills { display: flex; gap: 0.4rem; margin-bottom: 1rem; flex-wrap: wrap; }
+  .filter-pill { padding: 0.3rem 0.7rem; border-radius: 99px; border: 1px solid #252525; background: transparent; color: #777; font-size: 0.75rem; font-family: 'Outfit', sans-serif; cursor: pointer; transition: all 0.2s; white-space: nowrap; }
+  .filter-pill:hover { border-color: #555; color: #CCC; }
+  .filter-pill.active { background: #DC2626; border-color: #DC2626; color: #fff; }
+  .filter-pill .pill-count { color: #555; margin-left: 0.25rem; font-size: 0.65rem; }
+  .filter-pill.active .pill-count { color: rgba(255,255,255,0.7); }
 </style>
 </head><body><div class="container animate-in">
   <div class="home-logo"><a href="/"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
   <div class="page-heading">ALL MEETS</div>
-  <p class="subtitle" style="margin-bottom:1.25rem;">${meetList.length} meet${meetList.length !== 1 ? 's' : ''}</p>
+  <p class="subtitle" style="margin-bottom:0.75rem;">${meetList.length} meet${meetList.length !== 1 ? 's' : ''}</p>
+  <div class="filter-pills">
+    <button class="filter-pill active" data-filter="all">All</button>
+    ${live.length > 0 ? '<button class="filter-pill" data-filter="live">Live <span class="pill-count">' + (live.length + subscribed.filter(m => m.isLive).length) + '</span></button>' : ''}
+    ${today.length > 0 ? '<button class="filter-pill" data-filter="today">Today <span class="pill-count">' + today.length + '</span></button>' : ''}
+    ${past.length > 0 ? '<button class="filter-pill" data-filter="past">Past <span class="pill-count">' + past.length + '</span></button>' : ''}
+    ${meetList.some(m => m.hasVod) ? '<button class="filter-pill" data-filter="vod">Has Video</button>' : ''}
+  </div>
   <input type="text" class="search-box" placeholder="Search lifters or meets..." oninput="searchMeets(this.value)">
   ${subscribedSection}${liveSection}${todaySection}${pastSection}${empty}
 </div>
@@ -1780,25 +1794,53 @@ ${FONT_LINKS}
   } catch(e) {}
 })();
 function esc(s) { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c])); }
-function searchMeets(q) {
+var currentFilter = 'all';
+
+function applyFilters() {
   const cards = document.querySelectorAll('.meet-card');
   const labels = document.querySelectorAll('.section-group');
-  const lower = (q || '').trim().toLowerCase();
+  const searchBox = document.querySelector('.search-box');
+  const lower = (searchBox ? searchBox.value : '').trim().toLowerCase();
+  const isSearching = lower.length >= 2;
+
   cards.forEach(c => {
     const ml = c.querySelector('.matched-lifters');
-    if (!lower || lower.length < 2) { c.style.display = ''; ml.innerHTML = ''; return; }
-    const name = c.dataset.name || '';
-    const nameMatch = name.includes(lower);
-    const lifterList = (c.dataset.liftersDisplay || '').split('|').filter(Boolean);
-    const matched = lifterList.filter(n => n.toLowerCase().includes(lower));
-    if (nameMatch || matched.length > 0) {
-      c.style.display = '';
-      ml.innerHTML = matched.length > 0 ? matched.slice(0, 8).map(n => '<span>' + esc(n) + '</span>').join('') + (matched.length > 8 ? '<span style="color:#666;">+' + (matched.length - 8) + ' more</span>' : '') : '';
+    let show = true;
+
+    // Apply category filter (skip when searching — search shows all matches)
+    if (!isSearching && currentFilter !== 'all') {
+      const cat = c.dataset.category || '';
+      if (currentFilter === 'live') {
+        show = cat === 'live' || cat === 'sub';
+      } else if (currentFilter === 'today') {
+        show = cat === 'today' || cat === 'live' || cat === 'sub';
+      } else if (currentFilter === 'past') {
+        show = cat === 'past';
+      } else if (currentFilter === 'vod') {
+        show = c.dataset.hasVod === '1';
+      }
+    }
+
+    // Apply text search
+    if (isSearching) {
+      const name = c.dataset.name || '';
+      const nameMatch = name.includes(lower);
+      const lifterList = (c.dataset.liftersDisplay || '').split('|').filter(Boolean);
+      const matched = lifterList.filter(n => n.toLowerCase().includes(lower));
+      if (nameMatch || matched.length > 0) {
+        ml.innerHTML = matched.length > 0 ? matched.slice(0, 8).map(n => '<span>' + esc(n) + '</span>').join('') + (matched.length > 8 ? '<span style="color:#666;">+' + (matched.length - 8) + ' more</span>' : '') : '';
+      } else {
+        show = false;
+        ml.innerHTML = '';
+      }
     } else {
-      c.style.display = 'none';
       ml.innerHTML = '';
     }
+
+    c.style.display = show ? '' : 'none';
   });
+
+  // Hide section labels with no visible cards
   labels.forEach(l => {
     let next = l.nextElementSibling;
     let anyVisible = false;
@@ -1809,6 +1851,18 @@ function searchMeets(q) {
     l.style.display = anyVisible ? '' : 'none';
   });
 }
+
+function searchMeets() { applyFilters(); }
+
+// Filter pill clicks
+document.querySelectorAll('.filter-pill').forEach(pill => {
+  pill.addEventListener('click', function() {
+    document.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+    this.classList.add('active');
+    currentFilter = this.dataset.filter;
+    applyFilters();
+  });
+});
 </script>
 </body></html>`;
 }
