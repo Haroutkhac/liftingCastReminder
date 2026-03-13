@@ -2053,8 +2053,7 @@ ${FONT_LINKS}
     <select id="wc-filter" class="filter-select"><option value="">All Classes</option></select>
     <div class="controls-right">
       <select id="sort-by" class="filter-select">
-        <option value="order">Sort: Attempt Order</option>
-        <option value="wc" selected>Sort: Weight Class</option>
+        <option value="order" selected>Sort: Attempt Order</option>
         <option value="total">Sort: Total</option>
         <option value="name">Sort: Name</option>
       </select>
@@ -2080,7 +2079,7 @@ let wasLive = INITIAL_IS_LIVE;
 const LIFT_LABEL = { squat: 'SQ', bench: 'BP', dead: 'DL', deadlift: 'DL' };
 let lastData = null;
 let currentFilters = { search: '', session: '', flight: '', wc: '', platform: '' };
-let currentSort = 'wc';
+let currentSort = 'order';
 
 // Extract email from URL or localStorage for API calls
 const EMAIL = (function() {
@@ -2355,22 +2354,26 @@ function populateFilters(data) {
 
 function sortLifters(lifters, sortBy) {
   const copy = [...lifters];
-  switch (sortBy) {
-    case 'order':
-      copy.sort((a, b) => (a.orderPosition ?? 9999) - (b.orderPosition ?? 9999) || a.name.localeCompare(b.name));
-      break;
-    case 'total':
-      copy.sort((a, b) => (b.total || 0) - (a.total || 0) || a.name.localeCompare(b.name));
-      break;
-    case 'dots':
-      copy.sort((a, b) => (b.dots || 0) - (a.dots || 0) || a.name.localeCompare(b.name));
-      break;
-    case 'name':
-      copy.sort((a, b) => a.name.localeCompare(b.name));
-      break;
-    default: // 'wc' — weight class grouping (already sorted from API)
-      break;
-  }
+  // Always group by gender then weight class first, then apply secondary sort within groups
+  copy.sort((a, b) => {
+    const gA = a.gender && /^f/i.test(a.gender) ? 1 : 0;
+    const gB = b.gender && /^f/i.test(b.gender) ? 1 : 0;
+    if (gA !== gB) return gA - gB;
+    const wcA = typeof a.weightClass === 'number' ? a.weightClass : 9999;
+    const wcB = typeof b.weightClass === 'number' ? b.weightClass : 9999;
+    if (wcA !== wcB) return wcA - wcB;
+    // Secondary sort within weight class
+    switch (sortBy) {
+      case 'order':
+        return (a.orderPosition ?? 9999) - (b.orderPosition ?? 9999) || a.name.localeCompare(b.name);
+      case 'total':
+        return (b.total || 0) - (a.total || 0) || a.name.localeCompare(b.name);
+      case 'name':
+        return a.name.localeCompare(b.name);
+      default:
+        return (a.bodyWeight || 9999) - (b.bodyWeight || 9999) || a.name.localeCompare(b.name);
+    }
+  });
   return copy;
 }
 
@@ -2464,10 +2467,9 @@ function renderScoreboard(data) {
   let lastGender = null;
   const totalColCount = 3 + attemptCols.length + 3;
 
-  const showGroupSeparators = currentSort === 'wc';
   const rows = lifters.map(l => {
     let sep = '';
-    if (showGroupSeparators) {
+    {
       // Gender separator (Men / Women)
       const g = l.gender && /^f/i.test(l.gender) ? 'F' : 'M';
       if (g !== lastGender) {
