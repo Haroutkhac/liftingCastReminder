@@ -1654,23 +1654,27 @@ function meetsHTML(meetList, subscribedMeetIds) {
   // Partition into 3 groups: subscribed, live (not subscribed), rest
   const subscribed = meetList.filter(m => subSet.has(m.id));
   const live = meetList.filter(m => !subSet.has(m.id) && m.isLive);
-  const rest = meetList.filter(m => !subSet.has(m.id) && !m.isLive);
+  const today = meetList.filter(m => !subSet.has(m.id) && !m.isLive && !m.isPast);
+  const past = meetList.filter(m => !subSet.has(m.id) && m.isPast);
 
 
   // Sort CANPL meets to top within each group
   const canplFirst = (a, b) => (/canpl/i.test(b.name) ? 1 : 0) - (/canpl/i.test(a.name) ? 1 : 0);
   subscribed.sort(canplFirst);
   live.sort(canplFirst);
-  rest.sort(canplFirst);
+  today.sort(canplFirst);
 
   function renderCard(m) {
     const isLive = m.isLive;
     const isSub = subSet.has(m.id);
+    const isPast = m.isPast;
     const borderColor = isLive ? '#22C55E' : isSub ? '#DC2626' : '#1F1F1F';
-    const accentColor = isLive ? '#22C55E' : isSub ? '#DC2626' : '#333';
+    const accentColor = isLive ? '#22C55E' : isSub ? '#DC2626' : isPast ? '#555' : '#333';
     const badge = isLive
       ? '<span class="badge badge-live"><span class="pulse-dot"></span>Live</span>'
-      : '';
+      : isPast && m.hasVod
+        ? '<span class="badge" style="color:#4ADE80;border:1px solid #2D5A2D;">VOD</span>'
+        : '';
     const subBadge = isSub
       ? '<span class="badge badge-sub">Subscribed</span>'
       : '';
@@ -1688,7 +1692,10 @@ function meetsHTML(meetList, subscribedMeetIds) {
       ? `<div style="margin-top:0.5rem;"><a href="/meets/${escHtml(m.id)}" class="watch-live-link" onclick="event.stopPropagation();" style="color:#22C55E;font-size:0.82rem;font-weight:600;">WATCH LIVE &rarr;</a></div>`
       : '';
 
-    return `<div class="meet-card" style="border-color:${borderColor};cursor:pointer;" onclick="window.location='/meets/${escHtml(m.id)}'" data-name="${escHtml(m.name.toLowerCase())}" data-lifters="${escHtml((m.lifterNames || []).join('|').toLowerCase())}" data-lifters-display="${escHtml((m.lifterNames || []).join('|'))}">
+    // Past meets link to /recap/[id], active meets to /meets/[id]
+    const cardLink = isPast ? `/recap/${escHtml(m.id)}` : `/meets/${escHtml(m.id)}`;
+
+    return `<div class="meet-card" style="border-color:${borderColor};cursor:pointer;" onclick="window.location='${cardLink}'" data-name="${escHtml(m.name.toLowerCase())}" data-lifters="${escHtml((m.lifterNames || []).join('|').toLowerCase())}" data-lifters-display="${escHtml((m.lifterNames || []).join('|'))}">
       <div style="position:absolute;top:0;left:0;bottom:0;width:3px;background:${accentColor};"></div>
       <div class="meet-card-header">
         <h2 class="meet-card-title">${escHtml(m.name)}</h2>
@@ -1707,11 +1714,14 @@ function meetsHTML(meetList, subscribedMeetIds) {
   const liveSection = live.length > 0
     ? `<div class="section-label section-group" style="margin-top:1.5rem;">LIVE NOW</div>${live.map(renderCard).join('')}`
     : '';
-  const restSection = rest.length > 0
-    ? `<div class="section-label section-group" style="margin-top:1.5rem;">ALL MEETS</div>${rest.map(renderCard).join('')}`
+  const todaySection = today.length > 0
+    ? `<div class="section-label section-group" style="margin-top:1.5rem;">TODAY</div>${today.map(renderCard).join('')}`
+    : '';
+  const pastSection = past.length > 0
+    ? `<div class="section-label section-group" style="margin-top:1.5rem;">PAST MEETS</div>${past.map(renderCard).join('')}`
     : '';
   const empty = meetList.length === 0
-    ? '<p style="color:#555;text-align:center;margin:2rem 0;">No meets currently indexed.</p>'
+    ? '<p style="color:#555;text-align:center;margin:2rem 0;">No meets found.</p>'
     : '';
 
   return `<!DOCTYPE html>
@@ -1751,9 +1761,9 @@ ${FONT_LINKS}
 </head><body><div class="container animate-in">
   <div class="home-logo"><a href="/"><span class="brand"><span class="brand-lift">LIFT</span><span class="brand-alert">ALERT</span></span></a></div>
   <div class="page-heading">ALL MEETS</div>
-  <p class="subtitle" style="margin-bottom:1.25rem;">${meetList.length} meet${meetList.length !== 1 ? 's' : ''} currently indexed</p>
+  <p class="subtitle" style="margin-bottom:1.25rem;">${meetList.length} meet${meetList.length !== 1 ? 's' : ''}</p>
   <input type="text" class="search-box" placeholder="Search lifters or meets..." oninput="searchMeets(this.value)">
-  ${subscribedSection}${liveSection}${restSection}${empty}
+  ${subscribedSection}${liveSection}${todaySection}${pastSection}${empty}
 </div>
 <script>
 // Auto-redirect with email from localStorage if not already in URL
@@ -3434,7 +3444,9 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
         return new Date(Number(y), Number(mo) - 1, Number(d)).getTime() || 0;
       };
       const meetList = [];
+      const seenIds = new Set();
       for (const [mid, st] of Object.entries(meets)) {
+        seenIds.add(mid);
         const lifterCount = Object.keys(st.lifters).length;
         const platformCount = Object.keys(st.platforms).length;
         const meetDoc = st.meet || {};
@@ -3480,6 +3492,30 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
           lifterNames,
         });
       }
+
+      // Merge past meets from DB (recap meets not already in memory)
+      try {
+        const [recapMeets, recapLifterMap] = await Promise.all([getRecapMeets(), getRecapLifterNames()]);
+        for (const rm of recapMeets) {
+          if (seenIds.has(rm.meet_id)) continue;
+          seenIds.add(rm.meet_id);
+          meetList.push({
+            id: rm.meet_id,
+            name: rm.meet_name || rm.meet_id,
+            date: rm.meet_date || '',
+            dateFormat: 'MM/DD/YYYY',
+            location: '',
+            lifterCount: (recapLifterMap[rm.meet_id] || []).length,
+            platformCount: 0,
+            isLive: false,
+            isPast: true,
+            hasVod: !!rm.youtube_video_id,
+            currentLift: null,
+            lifterNames: recapLifterMap[rm.meet_id] || [],
+          });
+        }
+      } catch (e) { /* DB unavailable, just show in-memory meets */ }
+
       // Sort chronologically, newest first
       meetList.sort((a, b) => parseMeetDate(b) - parseMeetDate(a));
       const html = meetsHTML(meetList, subscribedMeetIds);
