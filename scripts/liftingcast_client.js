@@ -30,10 +30,12 @@ const { initDB, getSubscriptions, getAllMeetIds, addSubscription, removeSubscrip
         addPersistentSubscription, removePersistentSubscription, getPersistentSubscriptionsByEmail, getAllPersistentSubscriptions,
         getStats, logAttemptTimestamp, getAttemptTimestampsByMeet, getMeetVideo, getMeetVideos, setMeetVideo,
         getRecapLifterNames, getRecapMeets, getEmailStats,
-        isRecapSent, markRecapSent, deleteSubscriptionsForMeet, updateAttemptResult } = require('./db');
+        isRecapSent, markRecapSent, deleteSubscriptionsForMeet, updateAttemptResult,
+        pauseLifter, unpauseLifter } = require('./db');
 const { sendOnDeckEmail, sendSubscriptionConfirmation, sendAutoSubscribeNotification, sendRecapEmail } = require('./email');
 const { getMeetPlatform, loadSymPlmeetMeet, watchSymPlmeet, stopSymPlmeet,
-        stopAllSymPlmeet, discoverTodaysSymPlmeetMeets, normalizeSymPlmeetData } = require('./symplmeet_client');
+        stopAllSymPlmeet, discoverTodaysSymPlmeetMeets, normalizeSymPlmeetData,
+        symplmeetFetchJSON } = require('./symplmeet_client');
 
 // --- Parse CLI arguments ---
 const args = {};
@@ -602,7 +604,20 @@ function fetchJSON(url, options = {}) {
     let settled = false;
     const settle = (fn, val) => { if (!settled) { settled = true; fn(val); } };
 
-    const req = https.get(url, { timeout }, (res) => {
+    const parsed = new URL(url);
+    const reqOptions = {
+      hostname: parsed.hostname,
+      port: parsed.port || 443,
+      path: parsed.pathname + parsed.search,
+      method: options.method || 'GET',
+      timeout,
+      headers: { ...(options.headers || {}) },
+    };
+    if (options.body) {
+      reqOptions.headers['Content-Length'] = Buffer.byteLength(options.body);
+    }
+
+    const req = https.request(reqOptions, (res) => {
       if (res.statusCode < 200 || res.statusCode >= 300) {
         res.resume();
         settle(reject, new Error(`HTTP ${res.statusCode} from ${url}`));
@@ -618,6 +633,8 @@ function fetchJSON(url, options = {}) {
     });
     req.on('error', (err) => settle(reject, err));
     req.on('timeout', () => { req.destroy(); settle(reject, new Error(`Timeout fetching ${url}`)); });
+    if (options.body) req.write(options.body);
+    req.end();
   });
 }
 
@@ -1955,6 +1972,8 @@ ${FONT_LINKS}
   .att.open { color: #777; font-style: italic; }
   .att.current-att { color: #FBBF24; font-weight: 700; background: rgba(251,191,36,0.1); animation: pulse 1.5s infinite; }
   .att.empty { color: #333; }
+  .vod-link { color: inherit; text-decoration: none; }
+  .vod-link:hover { text-decoration: underline; }
 
   /* Total / summary cells */
   .total-cell { font-weight: 700; color: #F0F0F0; min-width: 48px; font-size: 0.85rem; }
@@ -2536,20 +2555,19 @@ function renderScoreboard(data) {
         } else if (a.result === 'good') {
           cls += bestKeys.has(key) ? ' good-best' : ' good';
           content = String(a.weight);
-          // Add VOD link on best attempt cells
-          if (bestKeys.has(key) && data.vodLinks) {
-            const _liftKey = key.slice(0, 2);
-            const _vodKey = l.name.toLowerCase() + ':' + _liftKey;
-            if (data.vodLinks[_vodKey]) {
-              content += ' <a href="' + esc(data.vodLinks[_vodKey]) + '" target="_blank" style="color:#DC2626;text-decoration:none;font-size:0.65rem;" title="Watch attempt">&#x25B6;</a>';
-            }
-          }
         } else if (a.result === 'bad') {
           cls += ' miss';
           content = String(a.weight);
         } else {
           cls += ' open';
           content = String(a.weight);
+        }
+        // Wrap weight in VOD link if available (clicking weight opens YouTube at that attempt)
+        if (!isHypo && data.vodLinks) {
+          const _vodKey = l.id + ':' + key;
+          if (data.vodLinks[_vodKey]) {
+            content = '<a href="' + esc(data.vodLinks[_vodKey]) + '" target="_blank" class="vod-link">' + content + '</a>';
+          }
         }
       } else {
         cls += ' empty';
@@ -3650,6 +3668,56 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
         res.writeHead(404, { 'Content-Type': 'text/plain' });
         res.end(`No attempt timestamps found for meet ${recapMeetId}.`);
       } else {
+        // Backfill missing results/weights from source
+        const needsBackfill = timestamps.some(t => !t.result);
+        if (needsBackfill) {
+          try {
+            if (getMeetPlatform(recapMeetId) === 'symplmeet') {
+              // SymPlmeet: fetch fresh data and extract results
+              const data = await symplmeetFetchJSON(`/api/getSocketData/${recapMeetId}`);
+              const tempState = { meet: {}, platforms: {}, lifters: {}, attempts: {}, divisions: {} };
+              normalizeSymPlmeetData(recapMeetId, data, tempState);
+              for (const t of timestamps) {
+                const attempt = tempState.attempts[t.attempt_id];
+                if (!attempt) continue;
+                if (attempt.result && !t.result) {
+                  t.result = attempt.result;
+                  updateAttemptResult(recapMeetId, t.attempt_id, attempt.result)
+                    .catch(err => console.error(`[RECAP BACKFILL] ${err.message}`));
+                }
+                if (attempt.weight && !t.weight) {
+                  t.weight = attempt.weight;
+                }
+              }
+            } else {
+              // LiftingCast: fetch attempt docs from CouchDB
+              const dbUrl = `${couchdbBase}/${recapMeetId}_readonly`;
+              const attemptIds = timestamps.map(t => t.attempt_id);
+              const resp = await fetchJSON(`${dbUrl}/_all_docs?include_docs=true`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ keys: attemptIds }),
+              });
+              if (resp.rows) {
+                for (const row of resp.rows) {
+                  if (!row.doc) continue;
+                  const t = timestamps.find(ts => ts.attempt_id === row.id);
+                  if (!t) continue;
+                  if (row.doc.result && !t.result) {
+                    t.result = row.doc.result;
+                    updateAttemptResult(recapMeetId, row.id, row.doc.result)
+                      .catch(err => console.error(`[RECAP BACKFILL] ${err.message}`));
+                  }
+                  if (row.doc.weight && !t.weight) {
+                    t.weight = row.doc.weight;
+                  }
+                }
+              }
+            }
+          } catch (err) {
+            console.error(`[RECAP BACKFILL] Failed to fetch results: ${err.message}`);
+          }
+        }
         const videoId = video?.youtube_video_id || null;
         const streamStart = video ? Number(video.stream_start_epoch) : 0;
         const cachedMeet = meets[recapMeetId];
@@ -3846,32 +3914,25 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
             .catch(() => {})
         );
       }
-      if (!isLive) {
-        apiFetches.push(
-          getAttemptTimestampsByMeet(liveMeetId).then(ts => { timestamps = ts; }).catch(() => {})
-        );
-      }
+      apiFetches.push(
+        getAttemptTimestampsByMeet(liveMeetId).then(ts => { timestamps = ts; }).catch(() => {})
+      );
       await Promise.all(apiFetches);
 
-      // Build VOD links when meet is not live and video exists
+      // Build per-attempt VOD links: "lifterId:attKey" -> YouTube URL with timestamp
       const LIFT_KEY_MAP = { squat: 'sq', bench: 'bp', dead: 'dl', deadlift: 'dl' };
       const vodLinks = {};
-      if (!isLive && video && timestamps.length > 0) {
+      if (video && timestamps.length > 0) {
         const streamStart = Number(video.stream_start_epoch);
         const videoId = video.youtube_video_id;
         if (streamStart > 0) {
-          const bestByLifterLift = {};
           for (const t of timestamps) {
             const liftKey = LIFT_KEY_MAP[t.lift_name] || t.lift_name;
-            const key = `${t.lifter_name.toLowerCase()}:${liftKey}`;
-            const w = Number(t.weight) || 0;
-            if (!bestByLifterLift[key] || w > bestByLifterLift[key].weight) {
-              bestByLifterLift[key] = { weight: w, wallEpoch: Math.floor(new Date(t.wall_clock_time).getTime() / 1000) };
-            }
-          }
-          for (const [key, val] of Object.entries(bestByLifterLift)) {
-            const offset = Math.max(0, val.wallEpoch - streamStart - TIMESTAMP_LEAD_SECONDS);
-            vodLinks[key] = `https://youtube.com/watch?v=${videoId}&t=${offset}`;
+            const attKey = liftKey + t.attempt_number;
+            const vodKey = `${t.lifter_id}:${attKey}`;
+            const wallEpoch = Math.floor(new Date(t.wall_clock_time).getTime() / 1000);
+            const offset = Math.max(0, wallEpoch - streamStart - TIMESTAMP_LEAD_SECONDS);
+            vodLinks[vodKey] = `https://youtube.com/watch?v=${videoId}&t=${offset}`;
           }
         }
       }
@@ -3974,6 +4035,41 @@ document.getElementById('unsub-form').addEventListener('submit', function(e) {
       res.writeHead(500, { 'Content-Type': 'text/plain' });
       res.end('Failed to follow. Please try again.');
     }
+
+  } else if (req.method === 'POST' && url.pathname === '/admin/pause-lifter') {
+    let body = '';
+    for await (const chunk of req) { body += chunk; if (body.length > 4096) break; }
+    const params = new URLSearchParams(body);
+    const lifterName = params.get('lifter');
+    const days = parseInt(params.get('days') || '7', 10);
+    if (!lifterName) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing lifter parameter' }));
+      return;
+    }
+    const pauseUntil = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+    const result = await pauseLifter(lifterName, pauseUntil);
+    // Clear subscription caches so paused subs take effect immediately
+    for (const meetId of Object.keys(subsCache)) delete subsCache[meetId];
+    console.log(`[ADMIN] Paused "${lifterName}" until ${pauseUntil.toISOString()} (${result.subscriptions} subs, ${result.persistent} persistent)`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, lifter: lifterName, paused_until: pauseUntil.toISOString(), ...result }));
+
+  } else if (req.method === 'POST' && url.pathname === '/admin/unpause-lifter') {
+    let body = '';
+    for await (const chunk of req) { body += chunk; if (body.length > 4096) break; }
+    const params = new URLSearchParams(body);
+    const lifterName = params.get('lifter');
+    if (!lifterName) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing lifter parameter' }));
+      return;
+    }
+    const result = await unpauseLifter(lifterName);
+    for (const meetId of Object.keys(subsCache)) delete subsCache[meetId];
+    console.log(`[ADMIN] Unpaused "${lifterName}" (${result.subscriptions} subs, ${result.persistent} persistent)`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, lifter: lifterName, ...result }));
 
   } else {
     res.writeHead(404, { 'Content-Type': 'text/plain' });

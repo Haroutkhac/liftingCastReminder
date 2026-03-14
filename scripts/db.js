@@ -61,6 +61,7 @@ async function initDB() {
     )
   `);
   await pool.query(`ALTER TABLE attempt_timestamps ADD COLUMN IF NOT EXISTS body_weight NUMERIC`);
+  await pool.query(`ALTER TABLE attempt_timestamps ADD COLUMN IF NOT EXISTS result TEXT`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS meet_videos (
       meet_id TEXT PRIMARY KEY,
@@ -87,12 +88,20 @@ async function initDB() {
   `);
   await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS notify_prefs TEXT DEFAULT 'in-the-hole'`);
   await pool.query(`ALTER TABLE persistent_subscriptions ADD COLUMN IF NOT EXISTS notify_prefs TEXT DEFAULT 'in-the-hole'`);
+  await pool.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS paused_until TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE persistent_subscriptions ADD COLUMN IF NOT EXISTS paused_until TIMESTAMPTZ`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS recaps_sent (
+      meet_id TEXT PRIMARY KEY,
+      sent_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
   console.log('[DB] All tables ready');
 }
 
 async function getSubscriptions(meetId) {
   const { rows } = await pool.query(
-    'SELECT email, lifter_name, meet_id, notify_prefs FROM subscriptions WHERE meet_id = $1',
+    'SELECT email, lifter_name, meet_id, notify_prefs FROM subscriptions WHERE meet_id = $1 AND (paused_until IS NULL OR paused_until < NOW())',
     [meetId]
   );
   return rows;
@@ -158,8 +167,32 @@ async function getPersistentSubscriptionsByEmail(email) {
 }
 
 async function getAllPersistentSubscriptions() {
-  const { rows } = await pool.query('SELECT email, lifter_name, notify_prefs FROM persistent_subscriptions');
+  const { rows } = await pool.query('SELECT email, lifter_name, notify_prefs FROM persistent_subscriptions WHERE paused_until IS NULL OR paused_until < NOW()');
   return rows;
+}
+
+async function pauseLifter(lifterName, pauseUntil) {
+  const r1 = await pool.query(
+    'UPDATE subscriptions SET paused_until = $1 WHERE LOWER(lifter_name) = LOWER($2)',
+    [pauseUntil, lifterName]
+  );
+  const r2 = await pool.query(
+    'UPDATE persistent_subscriptions SET paused_until = $1 WHERE LOWER(lifter_name) = LOWER($2)',
+    [pauseUntil, lifterName]
+  );
+  return { subscriptions: r1.rowCount, persistent: r2.rowCount };
+}
+
+async function unpauseLifter(lifterName) {
+  const r1 = await pool.query(
+    'UPDATE subscriptions SET paused_until = NULL WHERE LOWER(lifter_name) = LOWER($1)',
+    [lifterName]
+  );
+  const r2 = await pool.query(
+    'UPDATE persistent_subscriptions SET paused_until = NULL WHERE LOWER(lifter_name) = LOWER($1)',
+    [lifterName]
+  );
+  return { subscriptions: r1.rowCount, persistent: r2.rowCount };
 }
 
 async function getStats() {
@@ -272,10 +305,36 @@ async function getEmailStats() {
   };
 }
 
+async function updateAttemptResult(meetId, attemptId, result) {
+  await pool.query(
+    'UPDATE attempt_timestamps SET result = $1 WHERE meet_id = $2 AND attempt_id = $3',
+    [result, meetId, attemptId]
+  );
+}
+
+async function isRecapSent(meetId) {
+  const { rows } = await pool.query('SELECT 1 FROM recaps_sent WHERE meet_id = $1', [meetId]);
+  return rows.length > 0;
+}
+
+async function markRecapSent(meetId) {
+  await pool.query(
+    'INSERT INTO recaps_sent (meet_id) VALUES ($1) ON CONFLICT (meet_id) DO NOTHING',
+    [meetId]
+  );
+}
+
+async function deleteSubscriptionsForMeet(meetId) {
+  const { rowCount } = await pool.query('DELETE FROM subscriptions WHERE meet_id = $1', [meetId]);
+  return rowCount;
+}
+
 module.exports = {
   initDB, getSubscriptions, getAllMeetIds, addSubscription, removeSubscription, getSubscriptionsByEmail,
   addPersistentSubscription, removePersistentSubscription, getPersistentSubscriptionsByEmail, getAllPersistentSubscriptions,
   getStats, logAttemptTimestamp, getAttemptTimestamps, getAttemptTimestampsByMeet,
   setMeetVideo, getMeetVideo, getMeetVideos, getRecapLifterNames, getRecapMeets,
   logEmail, getEmailStats,
+  isRecapSent, markRecapSent, deleteSubscriptionsForMeet, updateAttemptResult,
+  pauseLifter, unpauseLifter,
 };
