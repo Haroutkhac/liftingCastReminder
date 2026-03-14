@@ -2566,7 +2566,7 @@ function renderScoreboard(data) {
         if (!isHypo && data.vodLinks) {
           const _vodKey = l.id + ':' + key;
           if (data.vodLinks[_vodKey]) {
-            content = '<a href="' + esc(data.vodLinks[_vodKey]) + '" target="_blank" class="vod-link">' + content + '</a>';
+            content = '<a href="' + esc(data.vodLinks[_vodKey]) + '" class="vod-link">' + content + '</a>';
           }
         }
       } else {
@@ -2635,7 +2635,7 @@ function renderYT(data) {
   const el = document.getElementById('yt-link-wrap');
   if (data.video && data.video.youtubeVideoId) {
     const label = data.isLive ? 'Watch Stream' : 'Watch on YouTube';
-    el.innerHTML = '<a class="yt-link" href="https://youtube.com/watch?v=' + esc(data.video.youtubeVideoId) + '" target="_blank">&#x25B6; ' + label + '</a>';
+    el.innerHTML = '<a class="yt-link" href="https://youtube.com/watch?v=' + esc(data.video.youtubeVideoId) + '">&#x25B6; ' + label + '</a>';
   } else {
     el.innerHTML = '';
   }
@@ -2913,7 +2913,7 @@ function recapHTML(meetId, meetName, videoId, streamStart, timestamps, meetDate)
       const w = cell.weight ? cell.weight : '?';
       const resultCls = cell.result === 'good' ? ' good' : cell.result === 'bad' ? ' miss' : '';
       if (cell.link) {
-        return `<td class="cell${resultCls}"><a href="${escHtml(cell.link)}" target="_blank" title="${cell.timeStr}">${w}</a></td>`;
+        return `<td class="cell${resultCls}"><a href="${escHtml(cell.link)}" title="${cell.timeStr}">${w}</a></td>`;
       }
       return `<td class="cell${resultCls}">${w}</td>`;
     }).join('');
